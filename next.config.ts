@@ -1,7 +1,9 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  /* config options here */
+  output: "standalone",
+  serverExternalPackages: ["ws", "express"],
+  reactStrictMode: false,
 };
 
 export default nextConfig;

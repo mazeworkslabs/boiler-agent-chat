@@ -1,0 +1,45 @@
+{
+  "name": "Falkenbergs kommun / Business Falkenberg",
+  "colors": {
+    "primary": "#1B5E7B",
+    "primary_dark": "#0D3B52",
+    "primary_light": "#4A9BC7",
+    "secondary": "#E8A838",
+    "accent": "#2E8B57",
+    "background_light": "#F7F8FA",
+    "background_dark": "#1A1E2E",
+    "text_dark": "#1A1E2E",
+    "text_light": "#FFFFFF",
+    "muted": "#6B7280",
+    "border": "#E5E7EB"
+  },
+  "hex_for_pptx": {
+    "primary": "1B5E7B",
+    "primary_dark": "0D3B52",
+    "primary_light": "4A9BC7",
+    "secondary": "E8A838",
+    "accent": "2E8B57",
+    "white": "FFFFFF",
+    "dark": "1A1E2E",
+    "muted": "6B7280",
+    "light_bg": "F7F8FA"
+  },
+  "fonts": {
+    "heading": "Georgia",
+    "body": "Calibri",
+    "sizes": {
+      "title": 36,
+      "subtitle": 20,
+      "body": 14,
+      "caption": 10
+    }
+  },
+  "logos": {
+    "horizontal_black": "/assets/logos/fk-logo-black-horizontal.png",
+    "horizontal_color": "/assets/logos/fk-logo-color-horizontal.png",
+    "horizontal_white": "/assets/logos/fk-logo-white-horizontal.svg",
+    "stacked_black": "/assets/logos/fk-logo-black-stacked.png",
+    "stacked_color": "/assets/logos/fk-logo-color-stacked.png",
+    "stacked_white": "/assets/logos/fk-logo-white-stacked.png"
+  }
+}

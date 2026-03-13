@@ -1,0 +1,33 @@
+services:
+  app:
+    build: .
+    ports:
+      - "127.0.0.1:3006:3000"
+    environment:
+      - DATABASE_URL=postgresql://postgres:${POSTGRES_PASSWORD}@postgres:5432/chat_app
+      - DATABASE_URL_FBG_ANALYTICS=postgresql://postgres:${POSTGRES_PASSWORD}@postgres:5432/fbg_analytics
+      - DATABASE_URL_NARINGSLIVSKLIMAT=postgresql://postgres:${POSTGRES_PASSWORD}@postgres:5432/naringslivsklimat
+      - DATABASE_URL_SCB_DATA=postgresql://postgres:${POSTGRES_PASSWORD}@postgres:5432/scb_data
+      - DATABASE_URL_FBG_PLANNING=postgresql://postgres:${POSTGRES_PASSWORD}@postgres:5432/fbg_planning
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - DIRECTUS_URL=https://cms.businessfalkenberg.se
+      - LLM_PROVIDER=${LLM_PROVIDER:-gemini}
+      - NODE_ENV=production
+    volumes:
+      - uploads:/app/uploads
+    networks:
+      - postgres_default
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 3s
+      start_period: 30s
+
+volumes:
+  uploads:
+
+networks:
+  postgres_default:
+    external: true
