@@ -194,11 +194,6 @@ export function ChatPanel({ sessionId, onSessionCreated, onArtifact, artifactCou
       : content;
     setMessages((prev) => [...prev, { id: uuidv4(), role: "user", content: displayContent }]);
 
-    const msgPayload: Record<string, unknown> = { type: "chat", content, provider, model };
-    if (files && files.length > 0) {
-      msgPayload.attachments = files;
-    }
-
     const currentSessionId = sessionIdRef.current;
     if (!currentSessionId) {
       pendingMessageRef.current = { content, provider, model };
@@ -206,8 +201,14 @@ export function ChatPanel({ sessionId, onSessionCreated, onArtifact, artifactCou
       return;
     }
 
-    msgPayload.sessionId = currentSessionId;
-    send(msgPayload);
+    send({
+      type: "chat",
+      sessionId: currentSessionId,
+      content,
+      provider,
+      model,
+      ...(files && files.length > 0 ? { attachments: files } : {}),
+    });
   };
 
   return (
