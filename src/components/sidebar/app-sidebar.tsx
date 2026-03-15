@@ -98,7 +98,18 @@ export function AppSidebar({
     <div className="flex h-full w-64 flex-col border-r border-border bg-card">
       {/* Header */}
       <div className="flex items-center justify-between border-b border-border px-4 py-3">
-        <h1 className="text-sm font-semibold">BF AI</h1>
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          src="/assets/logos/fk-logo-black-horizontal.png"
+          alt="Falkenbergs kommun"
+          className="h-8 w-auto dark:hidden"
+        />
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          src="/assets/logos/fk-logo-white-horizontal.svg"
+          alt="Falkenbergs kommun"
+          className="h-8 w-auto hidden dark:block"
+        />
         <button
           onClick={toggleCollapse}
           className="rounded-md p-1 text-muted-foreground hover:bg-muted"
