@@ -20,8 +20,10 @@ export interface AttachedFile {
   sizeBytes: number;
 }
 
+export type AgentMode = "auto" | "team" | "simple";
+
 interface ChatInputProps {
-  onSend: (message: string, provider: string, model: string, files?: AttachedFile[]) => void;
+  onSend: (message: string, provider: string, model: string, files?: AttachedFile[], agentMode?: AgentMode) => void;
   disabled?: boolean;
 }
 
@@ -45,6 +47,7 @@ export function ChatInput({ onSend, disabled }: ChatInputProps) {
   const [provider, setProvider] = useState<"gemini" | "anthropic">("gemini");
   const [model, setModel] = useState<string>(MODELS.gemini[0].id);
   const [files, setFiles] = useState<AttachedFile[]>([]);
+  const [agentMode, setAgentMode] = useState<AgentMode>("auto");
   const [uploading, setUploading] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -84,7 +87,7 @@ export function ChatInput({ onSend, disabled }: ChatInputProps) {
   const handleSubmit = () => {
     const trimmed = value.trim();
     if ((!trimmed && files.length === 0) || disabled) return;
-    onSend(trimmed || "(Se bifogade filer)", provider, model, files.length > 0 ? files : undefined);
+    onSend(trimmed || "(Se bifogade filer)", provider, model, files.length > 0 ? files : undefined, agentMode);
     setValue("");
     setFiles([]);
   };
@@ -169,6 +172,23 @@ export function ChatInput({ onSend, disabled }: ChatInputProps) {
               </option>
             ))}
           </select>
+
+          {/* Agent mode toggle */}
+          <div className="ml-auto flex items-center rounded-md border border-input bg-background text-xs">
+            {(["simple", "auto", "team"] as const).map((m) => (
+              <button
+                key={m}
+                onClick={() => setAgentMode(m)}
+                className={`h-8 px-2.5 transition-colors first:rounded-l-md last:rounded-r-md ${
+                  agentMode === m
+                    ? "bg-primary text-primary-foreground"
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                {m === "simple" ? "Chat" : m === "auto" ? "Auto" : "Team"}
+              </button>
+            ))}
+          </div>
         </div>
 
         {/* Attached files */}

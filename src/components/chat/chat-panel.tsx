@@ -2,10 +2,11 @@
 
 import { useRef, useEffect, useState, useCallback } from "react";
 import { useWebSocket, type WSMessage } from "@/hooks/use-websocket";
-import { ChatInput, type AttachedFile } from "./chat-input";
+import { ChatInput, type AttachedFile, type AgentMode } from "./chat-input";
 import { MessageBubble, type Message } from "./message-bubble";
 import { ToolCallIndicator } from "./tool-call-indicator";
 import { FileDownload } from "./file-download";
+import { ImageLightbox } from "./image-lightbox";
 import { v4 as uuidv4 } from "uuid";
 
 interface ToolCall {
@@ -38,8 +39,10 @@ export function ChatPanel({ sessionId, onSessionCreated, onArtifact, artifactCou
   const [isThinking, setIsThinking] = useState(false);
   const [toolCalls, setToolCalls] = useState<ToolCall[]>([]);
   const [generatedFiles, setGeneratedFiles] = useState<GeneratedFile[]>([]);
+  const [activeAgent, setActiveAgent] = useState<string | null>(null);
+  const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
-  const pendingMessageRef = useRef<{ content: string; provider: string; model: string } | null>(null);
+  const pendingMessageRef = useRef<{ content: string; provider: string; model: string; agentMode?: AgentMode } | null>(null);
   const streamingRef = useRef("");
   const sessionIdRef = useRef<string | null>(sessionId);
   // Stable refs for callbacks — avoids re-creating onMessage
@@ -88,6 +91,7 @@ export function ChatPanel({ sessionId, onSessionCreated, onArtifact, artifactCou
             content: pending.content,
             provider: pending.provider,
             model: pending.model,
+            ...(pending.agentMode && pending.agentMode !== "auto" ? { agentMode: pending.agentMode } : {}),
           });
         }
         break;
@@ -115,13 +119,24 @@ export function ChatPanel({ sessionId, onSessionCreated, onArtifact, artifactCou
         setStreamingContent(streamingRef.current);
         break;
       }
-      case "tool_use":
+      case "tool_use": {
+        // Flush any streaming text BEFORE the tool call so it appears above
+        const preToolText = streamingRef.current;
+        if (preToolText) {
+          streamingRef.current = "";
+          setStreamingContent("");
+          setMessages((prev) => [
+            ...prev,
+            { id: uuidv4(), role: "assistant" as const, content: preToolText },
+          ]);
+        }
         setIsThinking(false);
         setToolCalls((prev) => [
           ...prev,
           { id: msg.toolId as string, name: msg.toolName as string, status: "running" },
         ]);
         break;
+      }
       case "tool_result":
         setToolCalls((prev) =>
           prev.map((tc) =>
@@ -136,6 +151,22 @@ export function ChatPanel({ sessionId, onSessionCreated, onArtifact, artifactCou
           setGeneratedFiles((prev) => [...prev, ...(msg.files as GeneratedFile[])]);
         }
         break;
+      case "agent_status": {
+        // Flush streaming text from previous agent
+        const preAgentText = streamingRef.current;
+        if (preAgentText) {
+          streamingRef.current = "";
+          setStreamingContent("");
+          setMessages((prev) => [
+            ...prev,
+            { id: uuidv4(), role: "assistant" as const, content: preAgentText },
+          ]);
+        }
+        // Clear previous agent's tool calls
+        setToolCalls([]);
+        setActiveAgent(msg.content as string);
+        break;
+      }
       case "artifact":
         onArtifactRef.current?.({
           id: msg.id as string,
@@ -157,6 +188,7 @@ export function ChatPanel({ sessionId, onSessionCreated, onArtifact, artifactCou
         setIsStreaming(false);
         setIsThinking(false);
         setToolCalls([]);
+        setActiveAgent(null);
         // Don't clear generatedFiles — they stay visible for download
         break;
       }
@@ -186,9 +218,9 @@ export function ChatPanel({ sessionId, onSessionCreated, onArtifact, artifactCou
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
-  }, [messages, streamingContent]);
+  }, [messages, streamingContent, toolCalls, activeAgent, generatedFiles]);
 
-  const handleSend = (content: string, provider: string, model: string, files?: AttachedFile[]) => {
+  const handleSend = (content: string, provider: string, model: string, files?: AttachedFile[], agentMode?: AgentMode) => {
     const displayContent = files && files.length > 0
       ? `${content}\n\n${files.map((f) => `[${f.filename}]`).join(" ")}`
       : content;
@@ -196,7 +228,7 @@ export function ChatPanel({ sessionId, onSessionCreated, onArtifact, artifactCou
 
     const currentSessionId = sessionIdRef.current;
     if (!currentSessionId) {
-      pendingMessageRef.current = { content, provider, model };
+      pendingMessageRef.current = { content, provider, model, agentMode };
       send({ type: "new_session" });
       return;
     }
@@ -208,6 +240,7 @@ export function ChatPanel({ sessionId, onSessionCreated, onArtifact, artifactCou
       provider,
       model,
       ...(files && files.length > 0 ? { attachments: files } : {}),
+      ...(agentMode && agentMode !== "auto" ? { agentMode } : {}),
     });
   };
 
@@ -243,12 +276,27 @@ export function ChatPanel({ sessionId, onSessionCreated, onArtifact, artifactCou
             <MessageBubble key={msg.id} message={msg} />
           ))}
 
+          {activeAgent && (
+            <div className="flex justify-start">
+              <div className="inline-flex items-center gap-2 rounded-lg bg-primary/5 border border-primary/20 px-3 py-2 text-sm text-foreground">
+                <svg className="h-3.5 w-3.5 animate-spin text-primary shrink-0" viewBox="0 0 24 24" fill="none">
+                  <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth={2} className="opacity-25" />
+                  <path d="M4 12a8 8 0 018-8" stroke="currentColor" strokeWidth={2} strokeLinecap="round" />
+                </svg>
+                <span>{activeAgent}</span>
+              </div>
+            </div>
+          )}
+
           {toolCalls.map((tc) => (
             <ToolCallIndicator key={tc.id} toolName={tc.name} status={tc.status} summary={tc.summary} />
           ))}
 
           {generatedFiles.length > 0 && (
-            <FileDownload files={generatedFiles} />
+            <FileDownload
+              files={generatedFiles}
+              onImageClick={(idx) => setLightboxIndex(idx)}
+            />
           )}
 
           {isThinking && (
@@ -268,6 +316,21 @@ export function ChatPanel({ sessionId, onSessionCreated, onArtifact, artifactCou
       </div>
 
       <ChatInput onSend={handleSend} disabled={isStreaming} />
+
+      {/* Image lightbox */}
+      {lightboxIndex !== null && (() => {
+        const imageFiles = generatedFiles
+          .filter((f) => f.mimeType.startsWith("image/"))
+          .reverse(); // newest first
+        return imageFiles.length > 0 ? (
+          <ImageLightbox
+            images={imageFiles}
+            currentIndex={lightboxIndex}
+            onClose={() => setLightboxIndex(null)}
+            onNavigate={setLightboxIndex}
+          />
+        ) : null;
+      })()}
     </div>
   );
 }

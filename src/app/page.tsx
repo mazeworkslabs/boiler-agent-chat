@@ -66,8 +66,8 @@ export default function Home() {
         onLogout={handleLogout}
       />
 
-      <div className="flex flex-1">
-        <div className={`flex-1 ${artifacts.length > 0 && artifactPanelOpen ? "border-r border-border" : ""}`}>
+      <div className="flex flex-1 min-w-0 overflow-hidden">
+        <div className={`flex-1 min-w-0 ${artifacts.length > 0 && artifactPanelOpen ? "border-r border-border" : ""}`}>
           <ChatPanel
             sessionId={sessionId}
             onSessionCreated={handleSessionCreated}
@@ -79,7 +79,7 @@ export default function Home() {
         </div>
 
         {artifacts.length > 0 && artifactPanelOpen && (
-          <div className="w-1/2">
+          <div className="w-[45%] shrink-0 min-w-[320px] max-w-[640px]">
             <ArtifactPanel
               artifacts={artifacts}
               onClose={() => setArtifactPanelOpen(false)}

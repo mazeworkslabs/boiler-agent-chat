@@ -10,10 +10,11 @@ export async function GET(
 ) {
   const { id } = await params;
 
-  // Verify auth
-  const accessToken = req.cookies.get("access_token")?.value;
-  if (!accessToken) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  // UUID is unguessable — no auth required for file serving.
+  // This avoids 401s when tokens expire during long agent sessions
+  // or when <img> tags don't include cookies.
+  if (!id || id.length < 30) {
+    return NextResponse.json({ error: "Invalid file ID" }, { status: 400 });
   }
 
   const [file] = await db
@@ -27,11 +28,19 @@ export async function GET(
 
   try {
     const data = await readFile(file.filePath);
+
+    // For images, allow inline display; for other files, trigger download
+    const isImage = file.mimeType.startsWith("image/");
+    const disposition = isImage
+      ? `inline; filename="${file.filename}"`
+      : `attachment; filename="${file.filename}"`;
+
     return new NextResponse(data, {
       headers: {
         "Content-Type": file.mimeType,
-        "Content-Disposition": `attachment; filename="${file.filename}"`,
+        "Content-Disposition": disposition,
         "Content-Length": String(data.length),
+        "Cache-Control": "private, max-age=3600",
       },
     });
   } catch {

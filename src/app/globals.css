@@ -82,6 +82,29 @@ h1, h2, h3, h4, h5, h6 {
   letter-spacing: -0.025em;
 }
 
+/* Prose overflow handling for chat messages */
+.prose pre {
+  overflow-x: auto;
+  max-width: 100%;
+}
+
+.prose code {
+  word-break: break-all;
+}
+
+.prose pre code {
+  word-break: normal;
+}
+
+.prose table {
+  display: block;
+  overflow-x: auto;
+}
+
+.prose img {
+  border-radius: var(--radius);
+}
+
 /* Scrollbar styling */
 ::-webkit-scrollbar {
   width: 6px;

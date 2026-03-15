@@ -5,6 +5,7 @@ import os from "os";
 import { Type, type FunctionDeclaration } from "@google/genai";
 import { db } from "../db";
 import { generatedFiles } from "../db/schema";
+import { eq } from "drizzle-orm";
 
 const SANDBOX_DIR = path.join(os.tmpdir(), "chat-app-sandbox");
 const UPLOADS_DIR = path.join(process.cwd(), "uploads");
@@ -195,8 +196,28 @@ export async function executeRunCode(
   const assetsLink = path.join(runDir, "assets");
   await symlink(ASSETS_DIR, assetsLink).catch(() => {});
 
-  // Snapshot existing files before run
-  const filesBefore = new Set(await readdir(runDir));
+  // Copy previously generated files into sandbox so agents can edit them
+  if (sessionId) {
+    try {
+      const prevFiles = await db
+        .select()
+        .from(generatedFiles)
+        .where(eq(generatedFiles.sessionId, sessionId));
+      for (const f of prevFiles) {
+        const dest = path.join(runDir, f.filename);
+        await copyFile(f.filePath, dest).catch(() => {});
+      }
+    } catch {
+      // Non-critical — proceed without previous files
+    }
+  }
+
+  // Snapshot file stats before run (to detect both new and modified files)
+  const statsBefore = new Map<string, number>();
+  for (const f of await readdir(runDir)) {
+    const s = await stat(path.join(runDir, f)).catch(() => null);
+    if (s?.isFile()) statsBefore.set(f, s.mtimeMs);
+  }
   const scriptFile = language === "javascript" ? "script.mjs" : "script.py";
 
   try {
@@ -206,15 +227,22 @@ export async function executeRunCode(
 
     const output = [result.stdout, result.stderr].filter(Boolean).join("\n");
 
-    // Detect new files created during execution
+    // Detect new AND modified files
     const filesAfter = await readdir(runDir);
-    const newFiles = filesAfter.filter(
-      (f) => !filesBefore.has(f) && f !== scriptFile
-    );
+    const changedFiles: string[] = [];
+    for (const f of filesAfter) {
+      if (f === scriptFile) continue;
+      const s = await stat(path.join(runDir, f)).catch(() => null);
+      if (!s?.isFile()) continue;
+      const prevMtime = statsBefore.get(f);
+      if (prevMtime === undefined || s.mtimeMs > prevMtime) {
+        changedFiles.push(f);
+      }
+    }
 
     const savedFiles: GeneratedFile[] = [];
 
-    for (const filename of newFiles) {
+    for (const filename of changedFiles) {
       const ext = path.extname(filename).toLowerCase();
       const mimeType = MIME_TYPES[ext] || "application/octet-stream";
       const srcPath = path.join(runDir, filename);

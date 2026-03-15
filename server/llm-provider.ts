@@ -24,6 +24,11 @@ import {
   webSearchGeminiTool,
   executeWebSearch,
 } from "./tools/web-tools";
+import {
+  browseWebToolDefinition,
+  browseWebGeminiTool,
+  executeBrowseWeb,
+} from "./tools/browse-web";
 import path from "path";
 
 export type LLMProvider = "anthropic" | "gemini";
@@ -42,7 +47,7 @@ export const DEFAULT_GEMINI_MODEL = GEMINI_MODELS[0].id;
 export const DEFAULT_ANTHROPIC_MODEL = ANTHROPIC_MODELS[0].id;
 
 export interface LLMStreamEvent {
-  type: "thinking" | "text_delta" | "tool_use" | "tool_result" | "done" | "error" | "artifact" | "files";
+  type: "thinking" | "text_delta" | "tool_use" | "tool_result" | "done" | "error" | "artifact" | "files" | "agent_status";
   content?: string;
   toolName?: string;
   toolId?: string;
@@ -57,6 +62,8 @@ export interface LLMStreamEvent {
   artifactType?: string;
   // File fields
   files?: Array<{ id: string; filename: string; mimeType: string; sizeBytes: number }>;
+  // Agent team fields
+  agent?: string;
 }
 
 export interface ChatMessage {
@@ -107,6 +114,7 @@ const ANTHROPIC_TOOLS = [
   runCodeToolDefinition,
   webFetchToolDefinition,
   webSearchToolDefinition,
+  browseWebToolDefinition,
 ];
 
 // All Gemini tool definitions
@@ -116,18 +124,19 @@ const GEMINI_FUNCTION_DECLARATIONS = [
   runCodeGeminiTool,
   webFetchGeminiTool,
   webSearchGeminiTool,
+  browseWebGeminiTool,
 ];
 
 // --- Tool execution ---
 
-interface ToolResult {
+export interface ToolResult {
   success: boolean;
   result: string;
   artifact?: { id: string; title: string; type: string; content: string };
   files?: Array<{ id: string; filename: string; mimeType: string; sizeBytes: number }>;
 }
 
-async function executeTool(
+export async function executeTool(
   name: string,
   input: Record<string, unknown>,
   sessionId?: string
@@ -160,6 +169,8 @@ async function executeTool(
         return executeWebFetch(input);
       case "web_search":
         return executeWebSearch(input);
+      case "browse_web":
+        return executeBrowseWeb(input, sessionId);
       default:
         return { success: false, result: `Okänt verktyg: ${name}` };
     }

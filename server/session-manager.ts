@@ -5,6 +5,7 @@ import { db } from "./db";
 import { chatSessions, chatMessages, artifacts, generatedFiles } from "./db/schema";
 import { eq, desc } from "drizzle-orm";
 import { streamLLM, type LLMProvider, type ChatMessage } from "./llm-provider";
+import { streamAgentTeam, type AgentTeamMode } from "./agent-team";
 
 interface Attachment {
   id: string;
@@ -96,7 +97,8 @@ export class SessionManager {
     content: string,
     provider?: LLMProvider,
     model?: string,
-    attachments?: Attachment[]
+    attachments?: Attachment[],
+    agentMode?: AgentTeamMode
   ) {
     const llmProvider = provider || (process.env.LLM_PROVIDER as LLMProvider) || "anthropic";
 
@@ -168,8 +170,15 @@ export class SessionManager {
 
     let fullResponse = "";
 
+    // Choose streaming mode: agent team or flat loop
+    const effectiveMode = agentMode || "auto";
+    const streamSource =
+      effectiveMode === "simple"
+        ? streamLLM(llmProvider, chatHistory, model, sessionId)
+        : streamAgentTeam(chatHistory, llmProvider, model, sessionId, effectiveMode);
+
     try {
-      for await (const event of streamLLM(llmProvider, chatHistory, model, sessionId)) {
+      for await (const event of streamSource) {
         if (abortController.signal.aborted) break;
 
         if (event.type === "text_delta" && event.content) {

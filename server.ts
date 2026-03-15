@@ -3,6 +3,7 @@ import { createServer } from "http";
 import next from "next";
 import express from "express";
 import { createWSServer } from "./server/ws-server";
+import { initSchemaCache } from "./server/db/schema-cache";
 
 const dev = process.env.NODE_ENV !== "production";
 const port = parseInt(process.env.PORT || "3000", 10);
@@ -33,6 +34,9 @@ app.prepare().then(() => {
   expressApp.all("/{*path}", (req, res) => {
     handle(req, res);
   });
+
+  // Cache database schemas for agent team (non-blocking)
+  initSchemaCache().catch((err) => console.error("[SchemaCache] Init error:", err));
 
   httpServer.listen(port, () => {
     console.log(`> Ready on http://localhost:${port}`);
