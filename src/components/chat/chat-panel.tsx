@@ -23,6 +23,13 @@ interface GeneratedFile {
   sizeBytes: number;
 }
 
+interface EditingArtifact {
+  id: string;
+  title: string;
+  type: string;
+  content: string;
+}
+
 interface ChatPanelProps {
   sessionId: string | null;
   onSessionCreated: (id: string) => void;
@@ -30,9 +37,11 @@ interface ChatPanelProps {
   artifactCount?: number;
   artifactPanelOpen?: boolean;
   onToggleArtifactPanel?: () => void;
+  editingArtifact?: EditingArtifact | null;
+  onClearEditingArtifact?: () => void;
 }
 
-export function ChatPanel({ sessionId, onSessionCreated, onArtifact, artifactCount, artifactPanelOpen, onToggleArtifactPanel }: ChatPanelProps) {
+export function ChatPanel({ sessionId, onSessionCreated, onArtifact, artifactCount, artifactPanelOpen, onToggleArtifactPanel, editingArtifact, onClearEditingArtifact }: ChatPanelProps) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [streamingContent, setStreamingContent] = useState("");
   const [isStreaming, setIsStreaming] = useState(false);
@@ -131,6 +140,7 @@ export function ChatPanel({ sessionId, onSessionCreated, onArtifact, artifactCou
           ]);
         }
         setIsThinking(false);
+        setIsStreaming(true); // Show stop button during tool execution
         setToolCalls((prev) => [
           ...prev,
           { id: msg.toolId as string, name: msg.toolName as string, status: "running" },
@@ -164,6 +174,7 @@ export function ChatPanel({ sessionId, onSessionCreated, onArtifact, artifactCou
         }
         // Clear previous agent's tool calls
         setToolCalls([]);
+        setIsStreaming(true); // Show stop button when agent starts
         setActiveAgent(msg.content as string);
         break;
       }
@@ -226,9 +237,16 @@ export function ChatPanel({ sessionId, onSessionCreated, onArtifact, artifactCou
       : content;
     setMessages((prev) => [...prev, { id: uuidv4(), role: "user", content: displayContent }]);
 
+    // If editing an artifact, prepend its HTML to the message
+    let fullContent = content;
+    if (editingArtifact) {
+      fullContent = `[REDIGERA ARTIFACT: "${editingArtifact.title}"]\n\nAnvändarens instruktion: ${content}\n\n<existing-artifact type="${editingArtifact.type}">\n${editingArtifact.content}\n</existing-artifact>`;
+      onClearEditingArtifact?.();
+    }
+
     const currentSessionId = sessionIdRef.current;
     if (!currentSessionId) {
-      pendingMessageRef.current = { content, provider, model, agentMode };
+      pendingMessageRef.current = { content: fullContent, provider, model, agentMode };
       send({ type: "new_session" });
       return;
     }
@@ -236,7 +254,7 @@ export function ChatPanel({ sessionId, onSessionCreated, onArtifact, artifactCou
     send({
       type: "chat",
       sessionId: currentSessionId,
-      content,
+      content: fullContent,
       provider,
       model,
       ...(files && files.length > 0 ? { attachments: files } : {}),
@@ -314,6 +332,27 @@ export function ChatPanel({ sessionId, onSessionCreated, onArtifact, artifactCou
           )}
         </div>
       </div>
+
+      {/* Editing artifact indicator */}
+      {editingArtifact && (
+        <div className="flex items-center gap-2 border-t border-border bg-muted/50 px-4 py-2">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" className="h-3.5 w-3.5 text-muted-foreground shrink-0">
+            <path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7" />
+            <path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z" />
+          </svg>
+          <span className="text-xs text-muted-foreground truncate">
+            Redigerar: <span className="font-medium text-foreground">{editingArtifact.title}</span>
+          </span>
+          <button
+            onClick={onClearEditingArtifact}
+            className="ml-auto text-muted-foreground hover:text-foreground"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="h-3.5 w-3.5">
+              <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
+            </svg>
+          </button>
+        </div>
+      )}
 
       <ChatInput
         onSend={handleSend}

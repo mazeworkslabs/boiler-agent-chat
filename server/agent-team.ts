@@ -279,6 +279,12 @@ Anropa create_artifact med:
 
 Skriv ALDRIG HTML-kod som text. Använd ALLTID create_artifact-verktyget.
 
+## REDIGERING AV BEFINTLIG ARTIFACT
+Om meddelandet innehåller <existing-artifact>-taggar har användaren tryckt "Redigera" på en befintlig artifact.
+- Gör BARA de ändringar användaren ber om — ändra INTE resten av HTML:en
+- Behåll all befintlig struktur, data och styling
+- Anropa create_artifact med den uppdaterade HTML:en (samma title om inte annat anges)
+
 ## Tillgängliga CDN-bibliotek (injiceras automatiskt)
 Tailwind CSS, Chart.js, D3.js, Three.js, Mermaid, Recharts
 
@@ -400,8 +406,10 @@ doc_designer kan REDIGERA filer som redan skapats i sessionen. Om användaren be
 - doc_designer → nedladdningsbar fil (.pptx, .xlsx, .docx) — kan REDIGERA befintliga filer
 - artifact_designer → interaktiv HTML i preview-panelen
 - writer → text direkt i chatten
-- Vid redigeringsförfrågningar: använd doc_designer DIREKT (eventuellt med db_researcher om ny data behövs). Skapa INTE om hela filen.
-- Varje task-beskrivning ska vara SPECIFIK. Vid redigering: ange exakt filnamn och vad som ska ändras.
+- Vid redigeringsförfrågningar för dokument: använd doc_designer DIREKT. Skapa INTE om hela filen.
+- Vid redigeringsförfrågningar för artifacts (HTML): använd artifact_designer DIREKT. Meddelandet innehåller befintlig HTML i <existing-artifact>-taggar.
+- Om meddelandet börjar med [REDIGERA ARTIFACT] → kör ALLTID artifact_designer direkt, inga andra agenter behövs.
+- Varje task-beskrivning ska vara SPECIFIK. Vid redigering: ange exakt vad som ska ändras.
 
 Svara BARA med JSON.`;
 

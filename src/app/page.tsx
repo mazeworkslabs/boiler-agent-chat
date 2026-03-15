@@ -13,6 +13,7 @@ export default function Home() {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [artifacts, setArtifacts] = useState<Artifact[]>([]);
   const [artifactPanelOpen, setArtifactPanelOpen] = useState(true);
+  const [editingArtifact, setEditingArtifact] = useState<Artifact | null>(null);
   const redirectedRef = useRef(false);
 
   useEffect(() => {
@@ -75,6 +76,8 @@ export default function Home() {
             artifactCount={artifacts.length}
             artifactPanelOpen={artifactPanelOpen}
             onToggleArtifactPanel={() => setArtifactPanelOpen((v) => !v)}
+            editingArtifact={editingArtifact}
+            onClearEditingArtifact={() => setEditingArtifact(null)}
           />
         </div>
 
@@ -83,6 +86,7 @@ export default function Home() {
             <ArtifactPanel
               artifacts={artifacts}
               onClose={() => setArtifactPanelOpen(false)}
+              onEdit={(artifact) => setEditingArtifact(artifact)}
             />
           </div>
         )}

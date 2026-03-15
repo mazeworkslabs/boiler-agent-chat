@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useRef } from "react";
 
 export interface Artifact {
   id: string;
@@ -12,6 +12,7 @@ export interface Artifact {
 interface ArtifactPanelProps {
   artifacts: Artifact[];
   onClose?: () => void;
+  onEdit?: (artifact: Artifact) => void;
 }
 
 const CDN_SCRIPTS = `
@@ -61,9 +62,27 @@ function CloseIcon() {
   );
 }
 
-export function ArtifactPanel({ artifacts, onClose }: ArtifactPanelProps) {
-  const [activeTab, setActiveTab] = useState(0);
+function EditIcon() {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" className="h-3.5 w-3.5">
+      <path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7" />
+      <path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z" />
+    </svg>
+  );
+}
+
+export function ArtifactPanel({ artifacts, onClose, onEdit }: ArtifactPanelProps) {
+  const [activeTab, setActiveTab] = useState(artifacts.length - 1);
   const [copied, setCopied] = useState(false);
+
+  // Auto-switch to newest artifact when a new one is added
+  const prevLengthRef = useRef(artifacts.length);
+  if (artifacts.length > prevLengthRef.current) {
+    prevLengthRef.current = artifacts.length;
+    // Can't call setState during render, but we can set it on next tick
+    setTimeout(() => setActiveTab(artifacts.length - 1), 0);
+  }
+  prevLengthRef.current = artifacts.length;
 
   if (artifacts.length === 0) {
     return (
@@ -93,22 +112,30 @@ export function ArtifactPanel({ artifacts, onClose }: ArtifactPanelProps) {
 
   return (
     <div className="flex h-full flex-col">
-      {/* Tabs */}
+      {/* Navigation */}
       {artifacts.length > 1 && (
-        <div className="flex gap-1 border-b border-border p-2 overflow-x-auto">
-          {artifacts.map((a, i) => (
-            <button
-              key={a.id}
-              onClick={() => setActiveTab(i)}
-              className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors whitespace-nowrap ${
-                i === activeTab
-                  ? "bg-primary text-primary-foreground"
-                  : "text-muted-foreground hover:bg-muted"
-              }`}
-            >
-              {a.title}
-            </button>
-          ))}
+        <div className="flex items-center justify-between border-b border-border px-3 py-1.5">
+          <button
+            onClick={() => setActiveTab((prev) => Math.max(0, prev - 1))}
+            disabled={activeTab === 0}
+            className="rounded-md p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-30"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="h-3.5 w-3.5">
+              <path d="M15 18l-6-6 6-6" />
+            </svg>
+          </button>
+          <span className="text-xs text-muted-foreground">
+            {activeTab + 1} / {artifacts.length}
+          </span>
+          <button
+            onClick={() => setActiveTab((prev) => Math.min(artifacts.length - 1, prev + 1))}
+            disabled={activeTab === artifacts.length - 1}
+            className="rounded-md p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-30"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="h-3.5 w-3.5">
+              <path d="M9 18l6-6-6-6" />
+            </svg>
+          </button>
         </div>
       )}
 
@@ -145,6 +172,15 @@ export function ArtifactPanel({ artifacts, onClose }: ArtifactPanelProps) {
             <DownloadIcon />
             Ladda ner
           </button>
+          {onEdit && (
+            <button
+              onClick={() => onEdit(active)}
+              className={btnClass}
+            >
+              <EditIcon />
+              Redigera
+            </button>
+          )}
           <button
             onClick={() => {
               const blob = new Blob([iframeContent], { type: "text/html" });
