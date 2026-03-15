@@ -24,6 +24,7 @@ export type AgentMode = "auto" | "team" | "simple";
 
 interface ChatInputProps {
   onSend: (message: string, provider: string, model: string, files?: AttachedFile[], agentMode?: AgentMode) => void;
+  onAbort?: () => void;
   disabled?: boolean;
 }
 
@@ -42,7 +43,7 @@ function fileIcon(mime: string): string {
   return "FIL";
 }
 
-export function ChatInput({ onSend, disabled }: ChatInputProps) {
+export function ChatInput({ onSend, onAbort, disabled }: ChatInputProps) {
   const [value, setValue] = useState("");
   const [provider, setProvider] = useState<"gemini" | "anthropic">("gemini");
   const [model, setModel] = useState<string>(MODELS.gemini[0].id);
@@ -260,25 +261,28 @@ export function ChatInput({ onSend, disabled }: ChatInputProps) {
             rows={1}
             className="flex-1 resize-none rounded-xl border border-input bg-background px-4 py-3 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
           />
-          <button
-            onClick={handleSubmit}
-            disabled={disabled || (!value.trim() && files.length === 0)}
-            className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-primary text-primary-foreground transition-colors duration-200 hover:opacity-90 disabled:opacity-50"
-            aria-label="Skicka meddelande"
-          >
-            <svg
-              xmlns="http://www.w3.org/2000/svg"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth={2}
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              className="h-4 w-4"
+          {disabled ? (
+            <button
+              onClick={onAbort}
+              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-destructive text-destructive-foreground transition-colors duration-200 hover:opacity-90"
+              aria-label="Avbryt"
             >
-              <path d="M5 12h14M12 5l7 7-7 7" />
-            </svg>
-          </button>
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-4 w-4">
+                <rect x="6" y="6" width="12" height="12" rx="2" />
+              </svg>
+            </button>
+          ) : (
+            <button
+              onClick={handleSubmit}
+              disabled={!value.trim() && files.length === 0}
+              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-primary text-primary-foreground transition-colors duration-200 hover:opacity-90 disabled:opacity-50"
+              aria-label="Skicka meddelande"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4">
+                <path d="M5 12h14M12 5l7 7-7 7" />
+              </svg>
+            </button>
+          )}
         </div>
 
         {/* Drag overlay hint */}

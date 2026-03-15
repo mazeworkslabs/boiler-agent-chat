@@ -4,38 +4,38 @@
 :root {
   --background: oklch(0.985 0.003 260);
   --foreground: oklch(0.145 0.01 260);
-  --primary: oklch(0.45 0.15 250);
-  --primary-foreground: oklch(0.985 0.005 260);
+  --primary: oklch(0.145 0.01 260);
+  --primary-foreground: oklch(1 0 0);
   --card: oklch(1 0 0);
   --card-foreground: oklch(0.145 0.01 260);
-  --border: oklch(0.915 0.005 260);
-  --muted: oklch(0.965 0.003 260);
+  --border: oklch(0.88 0.005 260);
+  --muted: oklch(0.955 0.003 260);
   --muted-foreground: oklch(0.45 0.01 260);
-  --accent: oklch(0.965 0.003 260);
+  --accent: oklch(0.955 0.003 260);
   --accent-foreground: oklch(0.145 0.01 260);
   --destructive: oklch(0.55 0.2 25);
   --destructive-foreground: oklch(0.985 0.005 260);
-  --ring: oklch(0.45 0.15 250);
-  --input: oklch(0.915 0.005 260);
+  --ring: oklch(0.145 0.01 260);
+  --input: oklch(0.88 0.005 260);
   --radius: 0.75rem;
 }
 
 .dark {
   --background: oklch(0.13 0.01 260);
-  --foreground: oklch(0.985 0.005 260);
-  --primary: oklch(0.65 0.17 250);
+  --foreground: oklch(0.93 0.005 260);
+  --primary: oklch(0.93 0.005 260);
   --primary-foreground: oklch(0.13 0.01 260);
   --card: oklch(0.17 0.01 260);
-  --card-foreground: oklch(0.985 0.005 260);
-  --border: oklch(1 0 0 / 10%);
-  --muted: oklch(0.2 0.01 260);
-  --muted-foreground: oklch(0.65 0.01 260);
-  --accent: oklch(0.2 0.01 260);
-  --accent-foreground: oklch(0.985 0.005 260);
+  --card-foreground: oklch(0.93 0.005 260);
+  --border: oklch(1 0 0 / 12%);
+  --muted: oklch(0.22 0.01 260);
+  --muted-foreground: oklch(0.55 0.01 260);
+  --accent: oklch(0.22 0.01 260);
+  --accent-foreground: oklch(0.93 0.005 260);
   --destructive: oklch(0.55 0.2 25);
   --destructive-foreground: oklch(0.985 0.005 260);
-  --ring: oklch(0.65 0.17 250);
-  --input: oklch(1 0 0 / 10%);
+  --ring: oklch(0.93 0.005 260);
+  --input: oklch(1 0 0 / 12%);
 }
 
 @theme inline {
@@ -104,6 +104,12 @@ h1, h2, h3, h4, h5, h6 {
 .prose img {
   border-radius: var(--radius);
 }
+
+/* Theme-aware logo switching */
+.logo-dark { display: none; }
+.logo-light { display: block; }
+.dark .logo-dark { display: block; }
+.dark .logo-light { display: none; }
 
 /* Scrollbar styling */
 ::-webkit-scrollbar {

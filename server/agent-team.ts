@@ -68,6 +68,7 @@ const TOOL_DEFS: Record<string, { anthropic: object; gemini: object }> = {
 
 const SKILL_AGENT_MAP: Record<string, string[]> = {
   "database-query": ["db_researcher"],
+  "scb-api": ["api_researcher"],
   "grafisk-profil": ["doc_designer", "artifact_designer"],
   "pptx": ["doc_designer"],
   "docx": ["doc_designer"],
@@ -172,6 +173,27 @@ Svara med:
 {skills}`,
   },
 
+  api_researcher: {
+    name: "api_researcher",
+    label: "API-forskare",
+    emoji: "📡",
+    toolNames: ["run_code"],
+    promptTemplate: `Du är en expert på att hämta data från externa API:er för Business Falkenberg.
+
+Din huvudsakliga datakälla är SCB:s PxWeb API, men du kan även hämta data från andra öppna API:er.
+
+## VIKTIGT
+- Använd ALLTID run_code med Python för att göra API-anrop
+- Hämta ALLTID metadata (GET) först för att se variabelkoder och tillgängliga år
+- Inkludera alltid Falkenberg (1382) och gärna Riket (00) för jämförelse
+- SCB returnerar ANTAL, inte procent — beräkna andelar själv
+- Använd filter "top" för senaste data, inte hårdkodade år
+- Rate limit: 30 req / 10 sek — lägg in time.sleep(0.5) mellan anrop
+- Presentera resultaten som strukturerad data — analysen gör en annan specialist
+
+{skills}`,
+  },
+
   analyst: {
     name: "analyst",
     label: "Analytiker",
@@ -260,10 +282,17 @@ Skriv ALDRIG HTML-kod som text. Använd ALLTID create_artifact-verktyget.
 ## Tillgängliga CDN-bibliotek (injiceras automatiskt)
 Tailwind CSS, Chart.js, D3.js, Three.js, Mermaid, Recharts
 
+## BILDER I ARTIFACTS
+Artifacts körs i en sandboxad iframe. Du kan INTE referera bilder från sessionen (screenshots, diagram-PNG:er).
+Istället:
+- Skapa diagram DIREKT i HTML med Chart.js eller D3.js — bädda in datan i koden
+- Använd SVG-grafik istället för bilder
+- Om du har sifferdata från analytikern, bygg diagrammet i JavaScript i artifakten
+
 ## Riktlinjer
 - Skapa responsiva, interaktiva dashboards
-- Använd BF-färger: #1B5E7B, #E8A838, #2E8B57, #0D3B52
-- Inkludera diagram, nyckeltal (KPIs), tabeller
+- Använd BF-färger: #1f4e99, #009fe3, #52ae32, #f39200, #13153b
+- Inkludera diagram (Chart.js/D3), nyckeltal (KPIs), tabeller
 - Gör det visuellt tilltalande och professionellt
 - Ge en kort sammanfattning EFTER att artifakten skapats
 
@@ -324,16 +353,14 @@ Kommuner: Falkenberg, Göteborg, Kungsbacka, Varberg, Halmstad, Laholm, Båstad,
 - scb_income_distribution: inkomstfördelning P1-P100, D1-D10 per kommun
 - scb_leading_indicators: bygglov, bilregistreringar, befolkningsförändringar (månad/kvartal)
 
-### scb_data — Nationell KPI-data
-- kpi_data, economic_data, commute_flows
-
 ### fbg_planning — Århjulet
 - activities, focus_areas, strategic_concepts
 
 ## Tillgängliga agenter
 
 - db_researcher — hämtar data från ALLA databaser ovan (komplett schema injicerat)
-- web_researcher — söker på webben — BARA för extern info som INTE finns i databaserna (nyheter, trender, externt material)
+- api_researcher — hämtar FÄRSK data direkt från externa API:er (SCB PxWeb, m.fl.) via Python-kod. Använd när data saknas i våra databaser eller behöver vara mer aktuell.
+- web_researcher — söker på webben — BARA för nyheter, rapporter, kvalitativ info (INTE statistik — använd api_researcher istället)
 - analyst — analyserar data, kör Python-kod, skapar diagram
 - doc_designer — skapar OCH REDIGERAR nedladdningsbara filer (.pptx, .xlsx, .docx). Kan öppna och ändra befintliga filer från sessionen!
 - artifact_designer — skapar interaktiva HTML-dashboards i preview-panelen
@@ -356,14 +383,17 @@ doc_designer kan REDIGERA filer som redan skapats i sessionen. Om användaren be
 - "Skapa en dashboard över företagsdata" → db_researcher → analyst → artifact_designer
 - "Vad skriver media om Falkenbergs näringsliv?" → web_researcher (detta finns INTE i db)
 - "Jämför vår data med rikssnitt och nyheter" → db_researcher → web_researcher → analyst
+- "Hur ser befolkningsutvecklingen ut per åldersgrupp?" → api_researcher (detaljerad SCB-data) → analyst
+- "Hämta utbildningsnivå från SCB" → api_researcher → analyst
 - "Lägg till 2 slides om inkomst i presentationen" → doc_designer (redigera befintlig fil)
 - "Datan var för 2023, uppdatera till 2024" → db_researcher → doc_designer (hämta ny data, sen redigera filen)
 - "Ändra titeln på slide 3" → doc_designer (redigera befintlig fil, ingen ny data behövs)
 
 ## Regler
 
-- Använd ALLTID db_researcher för data som finns i våra databaser.
-- Använd web_researcher BARA för extern information (nyheter, rapporter, info utanför våra databaser).
+- Använd ALLTID db_researcher för data som finns i våra databaser (fbg_analytics, naringslivsklimat, fbg_planning).
+- Använd api_researcher för FÄRSK statistik från SCB eller andra API:er — speciellt data vi inte har i egna databaser.
+- Använd web_researcher BARA för nyheter, rapporter, kvalitativ info — INTE för statistik (api_researcher är bättre).
 - Jämförelser mellan kommuner → db_researcher (vi har 14 kommuner i naringslivsklimat!).
 - analyst behöver data — kör alltid researcher FÖRE analyst.
 - doc_designer och artifact_designer är ALDRIG i samma plan.

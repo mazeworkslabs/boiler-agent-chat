@@ -315,7 +315,25 @@ export function ChatPanel({ sessionId, onSessionCreated, onArtifact, artifactCou
         </div>
       </div>
 
-      <ChatInput onSend={handleSend} disabled={isStreaming} />
+      <ChatInput
+        onSend={handleSend}
+        onAbort={() => {
+          const sid = sessionIdRef.current;
+          if (sid) send({ type: "abort", sessionId: sid });
+          // Commit any partial streaming text
+          const partial = streamingRef.current;
+          if (partial) {
+            setMessages((prev) => [...prev, { id: uuidv4(), role: "assistant" as const, content: partial + "\n\n*(avbruten)*" }]);
+            streamingRef.current = "";
+            setStreamingContent("");
+          }
+          setIsStreaming(false);
+          setIsThinking(false);
+          setToolCalls([]);
+          setActiveAgent(null);
+        }}
+        disabled={isStreaming}
+      />
 
       {/* Image lightbox */}
       {lightboxIndex !== null && (() => {

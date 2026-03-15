@@ -18,7 +18,6 @@ interface ColumnInfo {
 const DB_URLS: Record<string, string | undefined> = {
   fbg_analytics: process.env.DATABASE_URL_FBG_ANALYTICS,
   naringslivsklimat: process.env.DATABASE_URL_NARINGSLIVSKLIMAT,
-  scb_data: process.env.DATABASE_URL_SCB_DATA,
   fbg_planning: process.env.DATABASE_URL_FBG_PLANNING,
 };
 

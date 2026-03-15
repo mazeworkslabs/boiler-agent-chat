@@ -102,13 +102,13 @@ export function AppSidebar({
         <img
           src="/assets/logos/fk-logo-black-horizontal.png"
           alt="Falkenbergs kommun"
-          className="h-8 w-auto dark:hidden"
+          className="logo-light h-9 w-auto"
         />
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img
           src="/assets/logos/fk-logo-white-horizontal.svg"
           alt="Falkenbergs kommun"
-          className="h-8 w-auto hidden dark:block"
+          className="logo-dark h-8 w-auto"
         />
         <button
           onClick={toggleCollapse}

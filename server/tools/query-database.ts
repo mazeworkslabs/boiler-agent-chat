@@ -4,7 +4,6 @@ import { Type, type FunctionDeclaration } from "@google/genai";
 const DB_CONFIGS: Record<string, string> = {
   fbg_analytics: process.env.DATABASE_URL_FBG_ANALYTICS!,
   naringslivsklimat: process.env.DATABASE_URL_NARINGSLIVSKLIMAT!,
-  scb_data: process.env.DATABASE_URL_SCB_DATA!,
   fbg_planning: process.env.DATABASE_URL_FBG_PLANNING!,
 };
 
@@ -51,13 +50,13 @@ export async function queryDatabase(
 export const queryDatabaseToolDefinition = {
   name: "query_database",
   description:
-    "Kör en read-only SQL-query mot en av Business Falkenbergs PostgreSQL-databaser. Tillgängliga databaser: fbg_analytics (företagsdata), naringslivsklimat (indikatorer), scb_data (KPI:er), fbg_planning (århjulet/aktiviteter).",
+    "Kör en read-only SQL-query mot en av Business Falkenbergs PostgreSQL-databaser. Tillgängliga databaser: fbg_analytics (företagsdata, jobb), naringslivsklimat (KPIs för 14 kommuner, inkomst, bostäder), fbg_planning (århjulet/aktiviteter).",
   input_schema: {
     type: "object" as const,
     properties: {
       database: {
         type: "string",
-        enum: ["fbg_analytics", "naringslivsklimat", "scb_data", "fbg_planning"],
+        enum: ["fbg_analytics", "naringslivsklimat", "fbg_planning"],
         description: "Vilken databas att fråga",
       },
       query: {
@@ -78,7 +77,7 @@ export const queryDatabaseGeminiTool: FunctionDeclaration = {
     properties: {
       database: {
         type: Type.STRING,
-        enum: ["fbg_analytics", "naringslivsklimat", "scb_data", "fbg_planning"],
+        enum: ["fbg_analytics", "naringslivsklimat", "fbg_planning"],
         description: "Vilken databas att fråga",
       },
       query: {
