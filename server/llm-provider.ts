@@ -31,6 +31,13 @@ import {
   executeBrowseWeb,
 } from "./tools/browse-web";
 import path from "path";
+import {
+  buildSessionStateContext,
+  buildStructuredResultPayload,
+  createNamedOutputsForResources,
+  type SessionNamedOutput,
+  type SessionState,
+} from "./session-state";
 
 export type LLMProvider = "anthropic" | "gemini";
 
@@ -65,6 +72,9 @@ export interface LLMStreamEvent {
   files?: Array<{ id: string; filename: string; mimeType: string; sizeBytes: number }>;
   // Agent team fields
   agent?: string;
+  namedOutputs?: SessionNamedOutput[];
+  facts?: string[];
+  resultKind?: "tool" | "delegate";
 }
 
 export interface ChatMessage {
@@ -84,9 +94,10 @@ function getSkills(): Skill[] {
   return cachedSkills;
 }
 
-function getSystemPrompt(): string {
+function getSystemPrompt(sessionState?: SessionState): string {
   const skills = getSkills();
   const skillContext = buildSkillContext(skills);
+  const sessionStateContext = sessionState ? buildSessionStateContext(sessionState) : "";
 
   return `Du är en AI-assistent för Business Falkenberg. Du hjälper medarbetare med:
 - Research och informationssökning
@@ -105,6 +116,7 @@ När användaren ber om visualiseringar, diagram, dashboards eller liknande — 
 
 Svara alltid på svenska om inte användaren skriver på annat språk.
 Var professionell, koncis och hjälpsam.
+${sessionStateContext ? `\n${sessionStateContext}\n` : ""}
 ${skillContext}`;
 }
 
@@ -133,6 +145,9 @@ const GEMINI_FUNCTION_DECLARATIONS = [
 export interface ToolResult {
   success: boolean;
   result: string;
+  summary?: string;
+  namedOutputs?: SessionNamedOutput[];
+  facts?: string[];
   artifact?: { id: string; title: string; type: string; content: string };
   files?: Array<{ id: string; filename: string; mimeType: string; sizeBytes: number }>;
 }
@@ -143,6 +158,7 @@ export async function executeTool(
   sessionId?: string
 ): Promise<ToolResult> {
   try {
+    const createdAt = new Date().toISOString();
     switch (name) {
       case "query_database": {
         const { rows, rowCount } = await queryDatabase(
@@ -154,24 +170,76 @@ export async function executeTool(
             ? "Inga resultat."
             : JSON.stringify(rows.slice(0, 50), null, 2) +
               (rowCount > 50 ? `\n\n... och ${rowCount - 50} rader till.` : "");
-        return { success: true, result: `${rowCount} rader returnerade.\n\n${resultStr}` };
+        return {
+          success: true,
+          result: `${rowCount} rader returnerade.\n\n${resultStr}`,
+          summary: `${rowCount} rader returnerade från ${input.database as string}.`,
+          facts: [`${rowCount} rader returnerade från ${input.database as string}.`],
+        };
       }
-      case "create_artifact":
-        return executeCreateArtifact(input);
+      case "create_artifact": {
+        const artifactResult = executeCreateArtifact(input);
+        return {
+          ...artifactResult,
+          summary: artifactResult.result,
+          namedOutputs: createNamedOutputsForResources({
+            sourcePrefix: name,
+            createdAt,
+            artifact: artifactResult.artifact,
+          }),
+        };
+      }
       case "run_code": {
         const codeResult = await executeRunCode(input, sessionId);
         return {
           success: codeResult.success,
           result: codeResult.result,
+          summary: codeResult.success
+            ? codeResult.files && codeResult.files.length > 0
+              ? `Koden kördes och skapade ${codeResult.files.length} fil(er).`
+              : "Koden kördes utan genererade filer."
+            : "Kodkörningen misslyckades.",
+          namedOutputs: createNamedOutputsForResources({
+            sourcePrefix: name,
+            createdAt,
+            files: codeResult.files,
+          }),
+          facts: codeResult.files?.length
+            ? [`Kodkörningen skapade ${codeResult.files.length} fil(er).`]
+            : undefined,
           files: codeResult.files,
         };
       }
-      case "web_fetch":
-        return executeWebFetch(input);
-      case "web_search":
-        return executeWebSearch(input);
-      case "browse_web":
-        return executeBrowseWeb(input, sessionId);
+      case "web_fetch": {
+        const result = await executeWebFetch(input);
+        return {
+          ...result,
+          summary: result.success ? "Webbsidan hämtades." : "Webbhämtningen misslyckades.",
+        };
+      }
+      case "web_search": {
+        const result = await executeWebSearch(input);
+        return {
+          ...result,
+          summary: result.success ? "Webbsökningen genomfördes." : "Webbsökningen misslyckades.",
+        };
+      }
+      case "browse_web": {
+        const result = await executeBrowseWeb(input, sessionId);
+        return {
+          ...result,
+          summary: result.success
+            ? result.files && result.files.length > 0
+              ? "Sidan besöktes och en screenshot sparades."
+              : "Sidan besöktes i webbläsare."
+            : "Webbläsarbesöket misslyckades.",
+          namedOutputs: createNamedOutputsForResources({
+            sourcePrefix: name,
+            createdAt,
+            files: result.files,
+          }),
+        };
+      }
       default:
         return { success: false, result: `Okänt verktyg: ${name}` };
     }
@@ -197,10 +265,11 @@ function getAnthropicClient(): Anthropic {
 export async function* streamAnthropic(
   messages: ChatMessage[],
   model?: string,
-  sessionId?: string
+  sessionId?: string,
+  sessionState?: SessionState
 ): AsyncGenerator<LLMStreamEvent> {
   const client = getAnthropicClient();
-  const systemPrompt = getSystemPrompt();
+  const systemPrompt = getSystemPrompt(sessionState);
 
   let anthropicMessages: Anthropic.MessageParam[] = messages.map((m) => ({
     role: m.role,
@@ -280,15 +349,29 @@ export async function* streamAnthropic(
 
       yield {
         type: "tool_result",
+        toolName: toolBlock.name,
         toolId: toolBlock.id,
         success: toolResult.success,
-        summary: toolResult.result.slice(0, 200),
+        summary: toolResult.summary || toolResult.result.slice(0, 200),
+        namedOutputs: toolResult.namedOutputs,
+        facts: toolResult.facts,
+        resultKind: "tool",
       };
 
       toolResults.push({
         type: "tool_result",
         tool_use_id: toolBlock.id,
-        content: toolResult.result,
+        content: buildStructuredResultPayload({
+          type: "tool",
+          name: toolBlock.name,
+          success: toolResult.success,
+          summary: toolResult.summary || toolResult.result.slice(0, 200),
+          details: toolResult.result,
+          namedOutputs: toolResult.namedOutputs,
+          facts: toolResult.facts,
+          artifact: toolResult.artifact,
+          files: toolResult.files,
+        }),
       });
     }
 
@@ -314,10 +397,11 @@ function getGeminiClient(): GoogleGenAI {
 export async function* streamGemini(
   messages: ChatMessage[],
   model?: string,
-  sessionId?: string
+  sessionId?: string,
+  sessionState?: SessionState
 ): AsyncGenerator<LLMStreamEvent> {
   const client = getGeminiClient();
-  const systemPrompt = getSystemPrompt();
+  const systemPrompt = getSystemPrompt(sessionState);
   const geminiModel = model || DEFAULT_GEMINI_MODEL;
 
   const contents: Content[] = messages.map((m) => ({
@@ -417,12 +501,33 @@ export async function* streamGemini(
         yield { type: "files", files: toolResult.files };
       }
 
-      yield { type: "tool_result", toolId, success: toolResult.success, summary: toolResult.result.slice(0, 200) };
+      yield {
+        type: "tool_result",
+        toolName: fc.name,
+        toolId,
+        success: toolResult.success,
+        summary: toolResult.summary || toolResult.result.slice(0, 200),
+        namedOutputs: toolResult.namedOutputs,
+        facts: toolResult.facts,
+        resultKind: "tool",
+      };
 
       functionResponses.push({
         functionResponse: {
           name: fc.name,
-          response: { result: toolResult.result },
+          response: {
+            result: buildStructuredResultPayload({
+              type: "tool",
+              name: fc.name,
+              success: toolResult.success,
+              summary: toolResult.summary || toolResult.result.slice(0, 200),
+              details: toolResult.result,
+              namedOutputs: toolResult.namedOutputs,
+              facts: toolResult.facts,
+              artifact: toolResult.artifact,
+              files: toolResult.files,
+            }),
+          },
         },
       });
     }
@@ -437,13 +542,14 @@ export function streamLLM(
   provider: LLMProvider,
   messages: ChatMessage[],
   model?: string,
-  sessionId?: string
+  sessionId?: string,
+  sessionState?: SessionState
 ): AsyncGenerator<LLMStreamEvent> {
   switch (provider) {
     case "anthropic":
-      return streamAnthropic(messages, model, sessionId);
+      return streamAnthropic(messages, model, sessionId, sessionState);
     case "gemini":
-      return streamGemini(messages, model, sessionId);
+      return streamGemini(messages, model, sessionId, sessionState);
     default:
       throw new Error(`Unknown LLM provider: ${provider}`);
   }

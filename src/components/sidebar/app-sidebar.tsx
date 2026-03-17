@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef } from "react";
+import { fetchWithAuthRetry } from "@/lib/auth-client";
 
 interface Session {
   id: string;
@@ -24,11 +25,15 @@ export function AppSidebar({
   onLogout,
 }: AppSidebarProps) {
   const [sessions, setSessions] = useState<Session[]>([]);
-  const [collapsed, setCollapsed] = useState(false);
+  const [collapsed, setCollapsed] = useState(() => {
+    if (typeof document === "undefined") return false;
+    const match = document.cookie.match(/sidebar_state=(\w+)/);
+    return match?.[1] === "collapsed";
+  });
 
   const loadSessions = useCallback(async () => {
     try {
-      const res = await fetch("/api/sessions");
+      const res = await fetchWithAuthRetry("/api/sessions");
       if (res.ok) {
         const data = await res.json();
         setSessions(data.sessions);
@@ -40,7 +45,9 @@ export function AppSidebar({
 
   // Load once on mount
   useEffect(() => {
-    loadSessions();
+    queueMicrotask(() => {
+      void loadSessions();
+    });
   }, [loadSessions]);
 
   // Refresh session list when activeSessionId changes (new session created)
@@ -48,15 +55,11 @@ export function AppSidebar({
   useEffect(() => {
     if (activeSessionId !== prevActiveRef.current) {
       prevActiveRef.current = activeSessionId;
-      loadSessions();
+      queueMicrotask(() => {
+        void loadSessions();
+      });
     }
   }, [activeSessionId, loadSessions]);
-
-  // Read collapsed state from cookie
-  useEffect(() => {
-    const match = document.cookie.match(/sidebar_state=(\w+)/);
-    if (match) setCollapsed(match[1] === "collapsed");
-  }, []);
 
   const toggleCollapse = () => {
     const next = !collapsed;

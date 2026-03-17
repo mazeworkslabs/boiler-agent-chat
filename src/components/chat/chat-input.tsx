@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect, useCallback } from "react";
+import { fetchWithAuthRetry } from "@/lib/auth-client";
 
 const MODELS = {
   gemini: [
@@ -50,6 +51,7 @@ export function ChatInput({ onSend, onAbort, disabled }: ChatInputProps) {
   const [files, setFiles] = useState<AttachedFile[]>([]);
   const [agentMode, setAgentMode] = useState<AgentMode>("auto");
   const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
   const [dragOver, setDragOver] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -69,17 +71,30 @@ export function ChatInput({ onSend, onAbort, disabled }: ChatInputProps) {
   const uploadFiles = useCallback(async (fileList: File[]) => {
     if (fileList.length === 0) return;
     setUploading(true);
+    setUploadError(null);
     try {
       const formData = new FormData();
       for (const f of fileList) {
         formData.append("files", f);
       }
-      const res = await fetch("/api/upload", { method: "POST", body: formData });
-      if (!res.ok) throw new Error("Upload failed");
+      const res = await fetchWithAuthRetry("/api/upload", { method: "POST", body: formData });
+      if (!res.ok) {
+        let message = `Upload failed (${res.status})`;
+        try {
+          const data = await res.json() as { error?: string };
+          if (data.error) {
+            message = data.error;
+          }
+        } catch {
+          // Ignore non-JSON error payloads.
+        }
+        throw new Error(message);
+      }
       const data = await res.json();
       setFiles((prev) => [...prev, ...data.files]);
     } catch (err) {
       console.error("Upload error:", err);
+      setUploadError(err instanceof Error ? err.message : "Kunde inte ladda upp filen.");
     } finally {
       setUploading(false);
     }
@@ -216,6 +231,12 @@ export function ChatInput({ onSend, onAbort, disabled }: ChatInputProps) {
                 </button>
               </div>
             ))}
+          </div>
+        )}
+
+        {uploadError && (
+          <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+            {uploadError}
           </div>
         )}
 

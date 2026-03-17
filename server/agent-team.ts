@@ -53,6 +53,14 @@ import {
 } from "./tools/browse-web";
 import { getSchemaContext } from "./db/schema-cache";
 import path from "path";
+import {
+  applyExecutionToSessionState,
+  buildSessionStateContext,
+  buildStructuredResultPayload,
+  cloneSessionState,
+  createNamedOutputsForResources,
+  type SessionState,
+} from "./session-state";
 
 // ---------------------------------------------------------------------------
 // Tool registry (shared between lead agent and specialists)
@@ -92,7 +100,14 @@ Available specialists:
 - doc_designer: Create/edit professional files (.pptx, .xlsx, .docx). Uses gemini-pro model. Can read uploaded PDFs.
 - artifact_designer: Create interactive HTML dashboards shown in preview panel.
 
-IMPORTANT: Include ALL relevant context in the task description — the specialist only sees what you give it.
+IMPORTANT: Prefer a structured handoff:
+- objective: what the specialist should accomplish
+- deliverable: the concrete output expected
+- instructions: 2-6 concrete instructions
+- successCriteria: what "done" means
+- contextRefs: files, artifacts, facts, or outputs to use
+
+Use task only as a legacy fallback.
 If the user uploaded a PDF or image, mention that it's attached — the specialist can see it too.`,
   input_schema: {
     type: "object" as const,
@@ -102,12 +117,44 @@ If the user uploaded a PDF or image, mention that it's attached — the speciali
         enum: SPECIALIST_NAMES as unknown as string[],
         description: "Which specialist to delegate to",
       },
+      objective: {
+        type: "string" as const,
+        description: "What the specialist should accomplish for this user request",
+      },
+      deliverable: {
+        type: "string" as const,
+        description: "What concrete output the specialist should produce",
+      },
+      instructions: {
+        type: "array" as const,
+        items: { type: "string" as const },
+        description: "2-6 concrete instructions for how to execute the handoff",
+      },
+      successCriteria: {
+        type: "array" as const,
+        items: { type: "string" as const },
+        description: "Checks that define when the handoff is complete",
+      },
+      contextRefs: {
+        type: "array" as const,
+        items: { type: "string" as const },
+        description: "Relevant files, artifacts, facts, or outputs the specialist should use",
+      },
+      preferredTools: {
+        type: "array" as const,
+        items: { type: "string" as const },
+        description: "Preferred tools for this handoff when relevant",
+      },
+      maxToolCalls: {
+        type: "integer" as const,
+        description: "Approximate maximum number of tool calls the specialist should aim for",
+      },
       task: {
         type: "string" as const,
-        description: "Detailed task description with all relevant context, data, and requirements",
+        description: "Legacy fallback: free-text task description",
       },
     },
-    required: ["agent", "task"],
+    required: ["agent"],
   },
 };
 
@@ -122,12 +169,44 @@ const delegateToolGemini: FunctionDeclaration = {
         enum: [...SPECIALIST_NAMES],
         description: "Which specialist to delegate to",
       },
+      objective: {
+        type: "STRING" as any, // eslint-disable-line @typescript-eslint/no-explicit-any
+        description: "What the specialist should accomplish for this user request",
+      },
+      deliverable: {
+        type: "STRING" as any, // eslint-disable-line @typescript-eslint/no-explicit-any
+        description: "What concrete output the specialist should produce",
+      },
+      instructions: {
+        type: "ARRAY" as any, // eslint-disable-line @typescript-eslint/no-explicit-any
+        items: { type: "STRING" as any }, // eslint-disable-line @typescript-eslint/no-explicit-any
+        description: "2-6 concrete instructions for how to execute the handoff",
+      },
+      successCriteria: {
+        type: "ARRAY" as any, // eslint-disable-line @typescript-eslint/no-explicit-any
+        items: { type: "STRING" as any }, // eslint-disable-line @typescript-eslint/no-explicit-any
+        description: "Checks that define when the handoff is complete",
+      },
+      contextRefs: {
+        type: "ARRAY" as any, // eslint-disable-line @typescript-eslint/no-explicit-any
+        items: { type: "STRING" as any }, // eslint-disable-line @typescript-eslint/no-explicit-any
+        description: "Relevant files, artifacts, facts, or outputs the specialist should use",
+      },
+      preferredTools: {
+        type: "ARRAY" as any, // eslint-disable-line @typescript-eslint/no-explicit-any
+        items: { type: "STRING" as any }, // eslint-disable-line @typescript-eslint/no-explicit-any
+        description: "Preferred tools for this handoff when relevant",
+      },
+      maxToolCalls: {
+        type: "NUMBER" as any, // eslint-disable-line @typescript-eslint/no-explicit-any
+        description: "Approximate maximum number of tool calls the specialist should aim for",
+      },
       task: {
         type: "STRING" as any, // eslint-disable-line @typescript-eslint/no-explicit-any
-        description: "Detailed task description with all relevant context, data, and requirements",
+        description: "Legacy fallback: free-text task description",
       },
     },
-    required: ["agent", "task"],
+    required: ["agent"],
   },
 };
 
@@ -184,7 +263,10 @@ const SPECIALISTS: Record<string, AgentDef> = {
 
 ## Riktlinjer
 - Använd EXAKT kolumnnamn från schemat — gissa ALDRIG
-- Kör ALLTID först: SELECT MAX(year/bokslutsaar) för att hitta senaste data
+- Kontrollera senaste årtal först BARA om tabellen faktiskt har en year-/bokslutsaar-lik kolumn
+- Om tabellen eller fälten är oklara: börja med EN schema-/preview-query, inte många breda keyword-sökningar
+- Kör normalt högst 3-6 queries totalt och fråga inte efter samma underlag två gånger
+- När du redan har relevanta rader: stoppa och sammanfatta i stället för att fortsätta utforska
 - Falkenbergs kommun-id är '1382'
 - Leverera STRUKTURERAD data med årtal — analysen görs av den som bad dig
 
@@ -282,10 +364,18 @@ Om <existing-artifact>-taggar finns: gör BARA de ändringar som efterfrågas.
 // Lead agent system prompt
 // ---------------------------------------------------------------------------
 
-function buildLeadAgentPrompt(): string {
+function buildLeadAgentPrompt(
+  sessionState?: SessionState,
+  options?: { mode?: "auto" | "team" }
+): string {
   const skills = getSkills();
   const skillContext = buildSkillContext(skills);
   const schemaContext = getSchemaContext();
+  const sessionStateContext = sessionState ? buildSessionStateContext(sessionState) : "";
+  const modeGuidance =
+    options?.mode === "team"
+      ? `\n## Team-läge\nDu är lead-agent i team-läge. För icke-triviala uppgifter ska du aktivt överväga att delegera till specialister, men bara när det faktiskt förbättrar resultatet.`
+      : `\n## Auto-läge\nDu är lead-agent i auto-läge. Avgör själv om du ska svara direkt, använda vanliga verktyg eller delegera till specialister.`;
 
   return `Du är en AI-assistent för Business Falkenberg. Du hjälper medarbetare med research, data, dokument och analys.
 
@@ -362,8 +452,14 @@ Om du ser [REDIGERA ARTIFACT] i meddelandet:
 - Svara alltid på svenska om inte användaren skriver på annat språk
 - Var professionell, koncis och hjälpsam
 - När du delegerar: inkludera ALL relevant kontext i task-beskrivningen
+- När du använder delegate: fyll helst objective, deliverable, instructions, successCriteria och contextRefs i stället för en enda fri task-text
 - Om du delegerat och fått tillbaka resultat: syntetisera och presentera snyggt för användaren
+- Om användaren frågar vilken kod, query eller vilka steg som redan körts: svara direkt utifrån historiken och delegera inte samma sak igen om det inte verkligen saknas underlag
+- Om användaren hänvisar till en specifik rapport, PDF eller fil men den inte finns i kontexten: be om filen i stället för att gissa eller fortsätta som om du hade den
 
+${modeGuidance}
+
+${sessionStateContext ? `${sessionStateContext}\n` : ""}
 ${skillContext}`;
 }
 
@@ -384,7 +480,7 @@ function buildSpecialistPrompt(agentDef: AgentDef): string {
   return agentDef.promptTemplate
     .replace("{skills}", skillContext)
     .replace("{schema}", agentDef.name === "db_researcher" ? getSchemaContext() : "")
-    + "\n\nSvara alltid på svenska om inte annat anges.";
+    + "\n\nDu far en strukturerad handoff med mal, leverabel, instruktioner, kontextreferenser och klart-nar-kriterier. Folj den strukturen och hall fokus pa precis den efterfragade leveransen.\n\nSvara alltid på svenska om inte annat anges.";
 }
 
 // ---------------------------------------------------------------------------
@@ -396,35 +492,270 @@ interface CostAccumulator {
   outputTokens: number;
 }
 
+type SpecialistName = typeof SPECIALIST_NAMES[number];
+
+interface HandoffSpec {
+  objective: string;
+  deliverable: string;
+  instructions: string[];
+  successCriteria: string[];
+  contextRefs: string[];
+  preferredTools?: string[];
+  maxToolCalls?: number;
+  legacyTask?: string;
+}
+
+function truncateText(value: string, maxLength: number): string {
+  if (value.length <= maxLength) return value;
+  return `${value.slice(0, maxLength - 1)}...`;
+}
+
+function cleanStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+
+  const seen = new Set<string>();
+  const next: string[] = [];
+
+  for (const item of value) {
+    if (typeof item !== "string") continue;
+    const cleaned = item.replace(/\s+/g, " ").trim();
+    if (!cleaned || seen.has(cleaned)) continue;
+    seen.add(cleaned);
+    next.push(cleaned);
+  }
+
+  return next;
+}
+
+function getDefaultDeliverable(agent: SpecialistName): string {
+  switch (agent) {
+    case "doc_designer":
+      return "En färdig nedladdningsbar fil som uppfyller användarens krav.";
+    case "artifact_designer":
+      return "En färdig HTML-artifact som kan visas direkt i preview-panelen.";
+    case "analyst":
+      return "En användbar analys med beräkningar, nyckelinsikter och bara de filer/diagram som faktiskt behövs.";
+    case "db_researcher":
+      return "Ett kompakt, strukturerat dataunderlag från databasen med relevanta rader och fält.";
+    case "api_researcher":
+      return "Ett strukturerat underlag från externa API:er som kan användas direkt i nästa steg.";
+    case "web_researcher":
+      return "Ett kort researchunderlag med relevanta källor och tydliga slutsatser.";
+    default:
+      return "Ett färdigt specialistunderlag som löser uppgiften.";
+  }
+}
+
+function getDefaultMaxToolCalls(agent: SpecialistName): number {
+  switch (agent) {
+    case "db_researcher":
+      return 6;
+    case "analyst":
+      return 5;
+    case "api_researcher":
+      return 5;
+    case "web_researcher":
+      return 4;
+    case "doc_designer":
+      return 3;
+    case "artifact_designer":
+      return 2;
+    default:
+      return 4;
+  }
+}
+
+function buildContextRefsFromSessionState(state: SessionState): string[] {
+  const refs: string[] = [];
+
+  for (const attachment of state.attachments.slice(-3)) {
+    refs.push(`Bilaga: ${attachment.filename} (${attachment.mimeType})`);
+  }
+
+  for (const file of state.generatedFiles.slice(-4)) {
+    refs.push(`Fil: ${file.filename} (${file.mimeType})`);
+  }
+
+  for (const artifact of state.artifacts.slice(-2)) {
+    refs.push(`Artifact: ${artifact.title} (${artifact.type})`);
+  }
+
+  for (const output of state.namedOutputs.slice(-4)) {
+    refs.push(`Output: ${output.label}`);
+  }
+
+  for (const fact of state.workingFacts.slice(-3)) {
+    refs.push(`Faktum: ${truncateText(fact.text, 140)}`);
+  }
+
+  return cleanStringArray(refs).slice(0, 10);
+}
+
+function normalizeHandoffSpec(
+  agent: SpecialistName,
+  input: Record<string, unknown> | HandoffSpec | string,
+  userMessage: string,
+  sessionState: SessionState
+): HandoffSpec {
+  if (typeof input === "string") {
+    return {
+      objective: truncateText(input.replace(/\s+/g, " ").trim() || userMessage, 400),
+      deliverable: getDefaultDeliverable(agent),
+      instructions: [input],
+      successCriteria: ["Lös användarens faktiska uppgift utan onödiga sidospår."],
+      contextRefs: buildContextRefsFromSessionState(sessionState),
+      preferredTools: SPECIALISTS[agent]?.toolNames || [],
+      maxToolCalls: getDefaultMaxToolCalls(agent),
+      legacyTask: input,
+    };
+  }
+
+  const raw = input as Partial<HandoffSpec> & { task?: string };
+  const fallbackTask =
+    typeof raw.task === "string" && raw.task.trim().length > 0
+      ? raw.task.trim()
+      : undefined;
+  const objective =
+    typeof raw.objective === "string" && raw.objective.trim().length > 0
+      ? raw.objective.trim()
+      : fallbackTask || truncateText(userMessage.replace(/\s+/g, " ").trim(), 400);
+  const instructions = cleanStringArray(raw.instructions);
+  const successCriteria = cleanStringArray(raw.successCriteria);
+  const contextRefs = cleanStringArray(raw.contextRefs);
+  const preferredTools = cleanStringArray(raw.preferredTools);
+  const maxToolCalls =
+    typeof raw.maxToolCalls === "number" && Number.isFinite(raw.maxToolCalls)
+      ? Math.max(1, Math.min(12, Math.floor(raw.maxToolCalls)))
+      : getDefaultMaxToolCalls(agent);
+
+  return {
+    objective,
+    deliverable:
+      typeof raw.deliverable === "string" && raw.deliverable.trim().length > 0
+        ? raw.deliverable.trim()
+        : getDefaultDeliverable(agent),
+    instructions:
+      instructions.length > 0
+        ? instructions
+        : fallbackTask
+          ? [fallbackTask]
+          : ["Lös användarens uppgift med specialistens bästa verktyg och håll fokus på det uttryckliga målet."],
+    successCriteria:
+      successCriteria.length > 0
+        ? successCriteria
+        : ["Slutresultatet ska direkt matcha användarens efterfrågade leverabel."],
+    contextRefs:
+      contextRefs.length > 0
+        ? contextRefs
+        : buildContextRefsFromSessionState(sessionState),
+    preferredTools: preferredTools.length > 0 ? preferredTools : SPECIALISTS[agent]?.toolNames || [],
+    maxToolCalls,
+    legacyTask: fallbackTask,
+  };
+}
+
+function formatHandoffForSpecialist(handoff: HandoffSpec): string {
+  const lines = [
+    "## Handoff",
+    `### Mål\n${handoff.objective}`,
+    `### Förväntad leverans\n${handoff.deliverable}`,
+  ];
+
+  if (handoff.instructions.length > 0) {
+    lines.push("### Instruktioner");
+    for (const instruction of handoff.instructions) {
+      lines.push(`- ${instruction}`);
+    }
+  }
+
+  if (handoff.successCriteria.length > 0) {
+    lines.push("### Klart när");
+    for (const criterion of handoff.successCriteria) {
+      lines.push(`- ${criterion}`);
+    }
+  }
+
+  if (handoff.contextRefs.length > 0) {
+    lines.push("### Kontextreferenser");
+    for (const ref of handoff.contextRefs) {
+      lines.push(`- ${ref}`);
+    }
+  }
+
+  if (handoff.preferredTools && handoff.preferredTools.length > 0) {
+    lines.push(`### Föredragna verktyg\n- ${handoff.preferredTools.join(", ")}`);
+  }
+
+  if (handoff.maxToolCalls != null) {
+    lines.push(`### Verktygsbudget\n- Sikta på högst ${handoff.maxToolCalls} verktygsanrop om inte uppgiften tydligt kräver mer.`);
+  }
+
+  return lines.join("\n");
+}
+
+function summarizeHandoffForStatus(handoff: HandoffSpec): string {
+  const summary = `${handoff.objective} -> ${handoff.deliverable}`;
+  return truncateText(summary.replace(/\s+/g, " ").trim(), 120);
+}
+
+
+function getMissingAttachmentMessage(
+  userMessage: string,
+  sessionState: SessionState
+): string | null {
+  if (sessionState.attachments.length > 0) {
+    return null;
+  }
+
+  const normalized = userMessage.toLowerCase();
+  const referencesSpecificSource =
+    /(bifogad|bilagd|uppladdad|medskickad|attached|attachment|pdf|rapporten|rapport\b|underlaget|dokumentet)/i.test(normalized)
+    || (
+      /(denna|den här|den har)/i.test(normalized)
+      && /(pdf|rapport|underlag|dokument)/i.test(normalized)
+    );
+  const asksToUseSource =
+    /(analysera|analys|läs|las|sammanfatta|utgå från|utga fran|basera|relatera|jämför|jamfor|kolla|checka|gå igenom|bearbeta|skapa|gör|gor)/i.test(normalized);
+
+  if (!referencesSpecificSource || !asksToUseSource) {
+    return null;
+  }
+
+  return "Du hänvisar till en specifik fil eller rapport, men jag ser ingen bifogad fil i den här chatten ännu. Bifoga filen så hjälper jag dig direkt.";
+}
+
 // ---------------------------------------------------------------------------
 // Execute delegate — runs a specialist sub-agent and collects results
 // ---------------------------------------------------------------------------
 
-async function executeDelegate(
+async function* executeDelegate(
   agentName: string,
-  task: string,
+  handoffInput: Record<string, unknown> | HandoffSpec | string,
   userMessage: string,
   provider: LLMProvider,
   model: string,
   sessionId: string | undefined,
-  costs: CostAccumulator,
-  onEvent: (event: LLMStreamEvent) => void
-): Promise<ToolResult> {
-  const agentDef = SPECIALISTS[agentName];
+  sessionState: SessionState,
+  costs: CostAccumulator
+): AsyncGenerator<LLMStreamEvent, ToolResult> {
+  const resolvedAgentName = agentName as SpecialistName;
+  const agentDef = SPECIALISTS[resolvedAgentName];
   if (!agentDef) {
     return { success: false, result: `Unknown specialist: ${agentName}` };
   }
+  const handoff = normalizeHandoffSpec(resolvedAgentName, handoffInput, userMessage, sessionState);
 
-  onEvent({
+  yield {
     type: "agent_status" as LLMStreamEvent["type"],
     agent: agentDef.name,
-    content: `${agentDef.emoji} ${agentDef.label}: ${task.slice(0, 100)}...`,
-  });
+    content: `${agentDef.emoji} ${agentDef.label}: ${summarizeHandoffForStatus(handoff)}...`,
+  };
 
   const systemPrompt = buildSpecialistPrompt(agentDef);
 
-  // Specialist gets: the delegate task + the original user message (for attachments)
-  const fullTask = `## Uppgift\n${task}\n\n## Ursprungligt meddelande från användaren\n${userMessage}`;
+  // Specialist gets: a structured handoff + the original user message (for attachments)
+  const sessionStateContext = buildSessionStateContext(sessionState);
+  const fullTask = `${formatHandoffForSpecialist(handoff)}${sessionStateContext ? `\n\n${sessionStateContext}` : ""}\n\n## Ursprungligt meddelande från användaren\n${userMessage}`;
 
   // Get tools for specialist
   const toolNames =
@@ -454,8 +785,7 @@ async function executeDelegate(
         });
 
   for await (const event of runner) {
-    // Forward events with agent tag
-    onEvent({ ...event, agent: agentDef.name } as LLMStreamEvent);
+    yield { ...event, agent: agentDef.name } as LLMStreamEvent;
 
     if (event.type === "text_delta" && event.content) {
       agentOutput += event.content;
@@ -473,15 +803,35 @@ async function executeDelegate(
     }
   }
 
-  onEvent({
+  yield {
     type: "agent_status" as LLMStreamEvent["type"],
     agent: agentDef.name,
     content: `${agentDef.emoji} ${agentDef.label} klar`,
+  };
+
+  const createdAt = new Date().toISOString();
+  const summary = agentOutput.trim() || "(Specialisten returnerade inget textresultat)";
+  const namedOutputs = createNamedOutputsForResources({
+    sourcePrefix: agentDef.name,
+    createdAt,
+    artifact: collectedArtifact,
+    files: collectedFiles,
   });
 
   return {
     success: true,
-    result: agentOutput || "(Specialisten returnerade inget textresultat)",
+    result: buildStructuredResultPayload({
+      type: "delegate",
+      name: "delegate",
+      agent: agentDef.name,
+      success: true,
+      summary,
+      namedOutputs,
+      artifact: collectedArtifact,
+      files: collectedFiles,
+    }),
+    summary,
+    namedOutputs,
     files: collectedFiles.length > 0 ? collectedFiles : undefined,
     artifact: collectedArtifact,
   };
@@ -549,9 +899,32 @@ async function* runSubAgentAnthropic(
         yield { type: "files", files: result.files };
       }
 
-      yield { type: "tool_result", toolId: toolBlock.id, success: result.success, summary: result.result.slice(0, 200) };
+      yield {
+        type: "tool_result",
+        toolName: toolBlock.name,
+        toolId: toolBlock.id,
+        success: result.success,
+        summary: result.summary || result.result.slice(0, 200),
+        namedOutputs: result.namedOutputs,
+        facts: result.facts,
+        resultKind: "tool",
+      };
 
-      toolResults.push({ type: "tool_result", tool_use_id: toolBlock.id, content: result.result });
+      toolResults.push({
+        type: "tool_result",
+        tool_use_id: toolBlock.id,
+        content: buildStructuredResultPayload({
+          type: "tool",
+          name: toolBlock.name,
+          success: result.success,
+          summary: result.summary || result.result.slice(0, 200),
+          details: result.result,
+          namedOutputs: result.namedOutputs,
+          facts: result.facts,
+          artifact: result.artifact,
+          files: result.files,
+        }),
+      });
     }
 
     messages = [...messages, { role: "assistant", content: contentBlocks }, { role: "user", content: toolResults }];
@@ -639,9 +1012,35 @@ async function* runSubAgentGemini(
         yield { type: "files", files: result.files };
       }
 
-      yield { type: "tool_result", toolId, success: result.success, summary: result.result.slice(0, 200) };
+      yield {
+        type: "tool_result",
+        toolName: fc.name,
+        toolId,
+        success: result.success,
+        summary: result.summary || result.result.slice(0, 200),
+        namedOutputs: result.namedOutputs,
+        facts: result.facts,
+        resultKind: "tool",
+      };
 
-      functionResponses.push({ functionResponse: { name: fc.name, response: { result: result.result } } });
+      functionResponses.push({
+        functionResponse: {
+          name: fc.name,
+          response: {
+            result: buildStructuredResultPayload({
+              type: "tool",
+              name: fc.name,
+              success: result.success,
+              summary: result.summary || result.result.slice(0, 200),
+              details: result.result,
+              namedOutputs: result.namedOutputs,
+              facts: result.facts,
+              artifact: result.artifact,
+              files: result.files,
+            }),
+          },
+        },
+      });
     }
 
     contents.push({ role: "user", parts: functionResponses });
@@ -657,10 +1056,12 @@ async function* runLeadAgentGemini(
   model: string,
   sessionId: string | undefined,
   costs: CostAccumulator,
-  eventBuffer: LLMStreamEvent[]
+  sessionState: SessionState,
+  mode: "auto" | "team"
 ): AsyncGenerator<LLMStreamEvent> {
   const client = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-  const systemPrompt = buildLeadAgentPrompt();
+  const systemPrompt = buildLeadAgentPrompt(sessionState, { mode });
+  let workingState = cloneSessionState(sessionState);
 
   // Build contents from conversation history
   const contents: Content[] = messages.map((m) => ({
@@ -731,32 +1132,82 @@ async function* runLeadAgentGemini(
       let result: ToolResult;
 
       if (fc.name === "delegate") {
-        // --- DELEGATION: Run specialist sub-agent ---
-        result = await executeDelegate(
+        const delegateStream = executeDelegate(
           fc.args.agent as string,
-          fc.args.task as string,
+          fc.args as Record<string, unknown>,
           userMessage,
           "gemini",
           model,
           sessionId,
-          costs,
-          (event) => eventBuffer.push(event)
+          workingState,
+          costs
         );
+
+        while (true) {
+          const next = await delegateStream.next();
+          if (next.done) {
+            result = next.value;
+            break;
+          }
+          yield next.value;
+        }
       } else {
         // --- Regular tool execution ---
         result = await executeTool(fc.name, fc.args, sessionId);
       }
 
-      if (result.artifact) {
+      if (fc.name !== "delegate" && result.artifact) {
         yield { type: "artifact", id: result.artifact.id, title: result.artifact.title, artifactType: result.artifact.type, content: result.artifact.content };
       }
-      if (result.files && result.files.length > 0) {
+      if (fc.name !== "delegate" && result.files && result.files.length > 0) {
         yield { type: "files", files: result.files };
       }
 
-      yield { type: "tool_result", toolId, success: result.success, summary: result.result.slice(0, 200) };
+      const summary = result.summary || result.result.slice(0, 200);
+      yield {
+        type: "tool_result",
+        toolName: fc.name,
+        toolId,
+        success: result.success,
+        summary,
+        agent: fc.name === "delegate" ? (fc.args.agent as string) : undefined,
+        namedOutputs: result.namedOutputs,
+        facts: result.facts,
+        resultKind: fc.name === "delegate" ? "delegate" : "tool",
+      };
 
-      functionResponses.push({ functionResponse: { name: fc.name, response: { result: result.result } } });
+      workingState = applyExecutionToSessionState(workingState, {
+        kind: fc.name === "delegate" ? "delegate" : "tool",
+        toolName: fc.name,
+        success: result.success,
+        summary,
+        agent: fc.name === "delegate" ? (fc.args.agent as string) : undefined,
+        createdAt: new Date().toISOString(),
+        namedOutputs: result.namedOutputs,
+        facts: result.facts,
+        artifact: result.artifact,
+        files: result.files,
+      });
+
+      functionResponses.push({
+        functionResponse: {
+          name: fc.name,
+          response: {
+            result: buildStructuredResultPayload({
+              type: fc.name === "delegate" ? "delegate" : "tool",
+              name: fc.name,
+              success: result.success,
+              agent: fc.name === "delegate" ? (fc.args.agent as string) : undefined,
+              summary,
+              details: result.result,
+              namedOutputs: result.namedOutputs,
+              facts: result.facts,
+              artifact: result.artifact,
+              files: result.files,
+            }),
+          },
+        },
+      });
     }
 
     contents.push({ role: "user", parts: functionResponses });
@@ -772,10 +1223,12 @@ async function* runLeadAgentAnthropic(
   model: string,
   sessionId: string | undefined,
   costs: CostAccumulator,
-  eventBuffer: LLMStreamEvent[]
+  sessionState: SessionState,
+  mode: "auto" | "team"
 ): AsyncGenerator<LLMStreamEvent> {
   const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-  const systemPrompt = buildLeadAgentPrompt();
+  const systemPrompt = buildLeadAgentPrompt(sessionState, { mode });
+  let workingState = cloneSessionState(sessionState);
 
   let anthropicMessages: Anthropic.MessageParam[] = messages.map((m) => ({
     role: m.role,
@@ -828,31 +1281,79 @@ async function* runLeadAgentAnthropic(
       let result: ToolResult;
 
       if (toolBlock.name === "delegate") {
-        const input = toolBlock.input as { agent: string; task: string };
-        result = await executeDelegate(
+        const input = toolBlock.input as Record<string, unknown> & { agent: string };
+        const delegateStream = executeDelegate(
           input.agent,
-          input.task,
+          input,
           userMessage,
           "anthropic",
           model,
           sessionId,
-          costs,
-          (event) => eventBuffer.push(event)
+          workingState,
+          costs
         );
+
+        while (true) {
+          const next = await delegateStream.next();
+          if (next.done) {
+            result = next.value;
+            break;
+          }
+          yield next.value;
+        }
       } else {
         result = await executeTool(toolBlock.name, toolBlock.input as Record<string, unknown>, sessionId);
       }
 
-      if (result.artifact) {
+      if (toolBlock.name !== "delegate" && result.artifact) {
         yield { type: "artifact", id: result.artifact.id, title: result.artifact.title, artifactType: result.artifact.type, content: result.artifact.content };
       }
-      if (result.files && result.files.length > 0) {
+      if (toolBlock.name !== "delegate" && result.files && result.files.length > 0) {
         yield { type: "files", files: result.files };
       }
 
-      yield { type: "tool_result", toolId: toolBlock.id, success: result.success, summary: result.result.slice(0, 200) };
+      const summary = result.summary || result.result.slice(0, 200);
+      yield {
+        type: "tool_result",
+        toolName: toolBlock.name,
+        toolId: toolBlock.id,
+        success: result.success,
+        summary,
+        agent: toolBlock.name === "delegate" ? ((toolBlock.input as { agent: string }).agent) : undefined,
+        namedOutputs: result.namedOutputs,
+        facts: result.facts,
+        resultKind: toolBlock.name === "delegate" ? "delegate" : "tool",
+      };
 
-      toolResults.push({ type: "tool_result", tool_use_id: toolBlock.id, content: result.result });
+      workingState = applyExecutionToSessionState(workingState, {
+        kind: toolBlock.name === "delegate" ? "delegate" : "tool",
+        toolName: toolBlock.name,
+        success: result.success,
+        summary,
+        agent: toolBlock.name === "delegate" ? ((toolBlock.input as { agent: string }).agent) : undefined,
+        createdAt: new Date().toISOString(),
+        namedOutputs: result.namedOutputs,
+        facts: result.facts,
+        artifact: result.artifact,
+        files: result.files,
+      });
+
+      toolResults.push({
+        type: "tool_result",
+        tool_use_id: toolBlock.id,
+        content: buildStructuredResultPayload({
+          type: toolBlock.name === "delegate" ? "delegate" : "tool",
+          name: toolBlock.name,
+          success: result.success,
+          agent: toolBlock.name === "delegate" ? ((toolBlock.input as { agent: string }).agent) : undefined,
+          summary,
+          details: result.result,
+          namedOutputs: result.namedOutputs,
+          facts: result.facts,
+          artifact: result.artifact,
+          files: result.files,
+        }),
+      });
     }
 
     anthropicMessages = [
@@ -874,7 +1375,8 @@ export async function* streamAgentTeam(
   provider: LLMProvider,
   model?: string,
   sessionId?: string,
-  mode: AgentTeamMode = "auto"
+  mode: AgentTeamMode = "auto",
+  sessionState?: SessionState
 ): AsyncGenerator<LLMStreamEvent> {
   const resolvedModel =
     model || (provider === "anthropic" ? DEFAULT_ANTHROPIC_MODEL : DEFAULT_GEMINI_MODEL);
@@ -882,34 +1384,39 @@ export async function* streamAgentTeam(
   // --- Simple mode: flat tool loop, no delegation ---
   if (mode === "simple") {
     const { streamLLM } = await import("./llm-provider");
-    yield* streamLLM(provider, messages, model, sessionId);
+    yield* streamLLM(provider, messages, model, sessionId, sessionState);
     return;
   }
 
   // --- Auto/Team mode: lead agent with delegation ---
   const costs: CostAccumulator = { inputTokens: 0, outputTokens: 0 };
-
-  // eventBuffer collects events from sub-agents during delegation
-  // (since we can't yield from inside executeDelegate's callback)
-  const eventBuffer: LLMStreamEvent[] = [];
+  const resolvedState: SessionState = sessionState || {
+    version: 2,
+    sessionId: sessionId || "",
+    latestUserMessage: messages[messages.length - 1]?.content || null,
+    attachments: [],
+    artifacts: [],
+    generatedFiles: [],
+    namedOutputs: [],
+    workingFacts: [],
+    recentToolResults: [],
+    recentDelegateResults: [],
+    timelineTurns: [],
+  };
+  const rawUserMessage = messages[messages.length - 1]?.content || "";
+  const missingAttachmentMessage = getMissingAttachmentMessage(rawUserMessage, resolvedState);
+  if (missingAttachmentMessage) {
+    yield { type: "text_delta", content: missingAttachmentMessage };
+    yield { type: "done", cost: costs };
+    return;
+  }
 
   const runner =
     provider === "anthropic"
-      ? runLeadAgentAnthropic(messages, resolvedModel, sessionId, costs, eventBuffer)
-      : runLeadAgentGemini(messages, resolvedModel, sessionId, costs, eventBuffer);
+      ? runLeadAgentAnthropic(messages, resolvedModel, sessionId, costs, resolvedState, mode)
+      : runLeadAgentGemini(messages, resolvedModel, sessionId, costs, resolvedState, mode);
 
-  for await (const event of runner) {
-    // First, flush any buffered events from sub-agents
-    while (eventBuffer.length > 0) {
-      yield eventBuffer.shift()!;
-    }
-    yield event;
-  }
-
-  // Flush remaining buffered events
-  while (eventBuffer.length > 0) {
-    yield eventBuffer.shift()!;
-  }
+  yield* runner;
 
   yield { type: "done", cost: costs };
 }

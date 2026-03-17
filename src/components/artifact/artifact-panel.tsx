@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef } from "react";
+import { useState } from "react";
 
 export interface Artifact {
   id: string;
@@ -23,6 +23,29 @@ const CDN_SCRIPTS = `
 <script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
 <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
 `;
+
+function isFullHtmlDocument(content: string): boolean {
+  return /<!doctype html/i.test(content) || /<html[\s>]/i.test(content);
+}
+
+function buildArtifactDocument(artifact: Artifact): string {
+  if (artifact.type === "html" && isFullHtmlDocument(artifact.content)) {
+    return artifact.content;
+  }
+
+  return `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1">
+      ${CDN_SCRIPTS}
+      <style>body { font-family: system-ui, sans-serif; margin: 0; padding: 16px; }</style>
+    </head>
+    <body>${artifact.content}</body>
+    </html>
+  `;
+}
 
 function CopyIcon() {
   return (
@@ -75,15 +98,6 @@ export function ArtifactPanel({ artifacts, onClose, onEdit }: ArtifactPanelProps
   const [activeTab, setActiveTab] = useState(artifacts.length - 1);
   const [copied, setCopied] = useState(false);
 
-  // Auto-switch to newest artifact when a new one is added
-  const prevLengthRef = useRef(artifacts.length);
-  if (artifacts.length > prevLengthRef.current) {
-    prevLengthRef.current = artifacts.length;
-    // Can't call setState during render, but we can set it on next tick
-    setTimeout(() => setActiveTab(artifacts.length - 1), 0);
-  }
-  prevLengthRef.current = artifacts.length;
-
   if (artifacts.length === 0) {
     return (
       <div className="flex h-full items-center justify-center text-muted-foreground">
@@ -92,20 +106,10 @@ export function ArtifactPanel({ artifacts, onClose, onEdit }: ArtifactPanelProps
     );
   }
 
-  const active = artifacts[activeTab];
+  const safeActiveTab = Math.min(activeTab, artifacts.length - 1);
+  const active = artifacts[safeActiveTab];
 
-  const iframeContent = `
-    <!DOCTYPE html>
-    <html>
-    <head>
-      <meta charset="utf-8">
-      <meta name="viewport" content="width=device-width, initial-scale=1">
-      ${CDN_SCRIPTS}
-      <style>body { font-family: system-ui, sans-serif; margin: 0; padding: 16px; }</style>
-    </head>
-    <body>${active.content}</body>
-    </html>
-  `;
+  const iframeContent = buildArtifactDocument(active);
 
   const btnClass =
     "inline-flex items-center gap-1.5 rounded-lg border border-border px-2.5 py-1.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground";
@@ -117,7 +121,7 @@ export function ArtifactPanel({ artifacts, onClose, onEdit }: ArtifactPanelProps
         <div className="flex items-center justify-between border-b border-border px-3 py-1.5">
           <button
             onClick={() => setActiveTab((prev) => Math.max(0, prev - 1))}
-            disabled={activeTab === 0}
+            disabled={safeActiveTab === 0}
             className="rounded-md p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-30"
           >
             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="h-3.5 w-3.5">
@@ -125,11 +129,11 @@ export function ArtifactPanel({ artifacts, onClose, onEdit }: ArtifactPanelProps
             </svg>
           </button>
           <span className="text-xs text-muted-foreground">
-            {activeTab + 1} / {artifacts.length}
+            {safeActiveTab + 1} / {artifacts.length}
           </span>
           <button
             onClick={() => setActiveTab((prev) => Math.min(artifacts.length - 1, prev + 1))}
-            disabled={activeTab === artifacts.length - 1}
+            disabled={safeActiveTab === artifacts.length - 1}
             className="rounded-md p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-30"
           >
             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="h-3.5 w-3.5">

@@ -1,5 +1,19 @@
 import { Type, type FunctionDeclaration } from "@google/genai";
 
+const DB_UNSAFE_CONTROL_CHARS_RE = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g;
+
+function toWellFormedText(value: string): string {
+  if (typeof value.toWellFormed === "function") {
+    return value.toWellFormed();
+  }
+  return value;
+}
+
+function sanitizeArtifactText(value: unknown): string {
+  if (typeof value !== "string") return "";
+  return toWellFormedText(value).replace(DB_UNSAFE_CONTROL_CHARS_RE, "");
+}
+
 export const createArtifactToolDefinition = {
   name: "create_artifact",
   description:
@@ -54,9 +68,9 @@ export function executeCreateArtifact(input: Record<string, unknown>): {
   artifact: { id: string; title: string; type: string; content: string };
 } {
   const id = crypto.randomUUID();
-  const title = input.title as string;
-  const type = input.type as string;
-  const content = input.content as string;
+  const title = sanitizeArtifactText(input.title).trim() || "Untitled artifact";
+  const type = sanitizeArtifactText(input.type).trim() || "html";
+  const content = sanitizeArtifactText(input.content);
 
   return {
     success: true,

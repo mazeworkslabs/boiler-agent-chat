@@ -26,11 +26,13 @@ export default function Home() {
   const handleSelectSession = useCallback((id: string) => {
     setSessionId(id);
     setArtifacts([]);
+    setEditingArtifact(null);
   }, []);
 
   const handleNewChat = useCallback(() => {
     setSessionId(null);
     setArtifacts([]);
+    setEditingArtifact(null);
   }, []);
 
   const handleLogout = useCallback(async () => {
@@ -39,12 +41,29 @@ export default function Home() {
   }, [logout, router]);
 
   const handleArtifact = useCallback((artifact: Artifact) => {
-    setArtifacts((prev) => [...prev, artifact]);
+    setArtifacts((prev) => {
+      const existingIndex = prev.findIndex((item) => item.id === artifact.id);
+      if (existingIndex === -1) {
+        return [...prev, artifact];
+      }
+
+      const next = [...prev];
+      next[existingIndex] = artifact;
+      return next;
+    });
     setArtifactPanelOpen(true);
   }, []);
 
   const handleSessionCreated = useCallback((id: string) => {
     setSessionId(id);
+  }, []);
+
+  const handleReplaceArtifacts = useCallback((nextArtifacts: Artifact[]) => {
+    setArtifacts(nextArtifacts);
+    setEditingArtifact((current) => {
+      if (!current) return null;
+      return nextArtifacts.find((artifact) => artifact.id === current.id) || null;
+    });
   }, []);
 
   if (loading) {
@@ -73,6 +92,7 @@ export default function Home() {
             sessionId={sessionId}
             onSessionCreated={handleSessionCreated}
             onArtifact={handleArtifact}
+            onReplaceArtifacts={handleReplaceArtifacts}
             artifactCount={artifacts.length}
             artifactPanelOpen={artifactPanelOpen}
             onToggleArtifactPanel={() => setArtifactPanelOpen((v) => !v)}
@@ -84,6 +104,7 @@ export default function Home() {
         {artifacts.length > 0 && artifactPanelOpen && (
           <div className="w-[45%] shrink-0 min-w-[320px] max-w-[640px]">
             <ArtifactPanel
+              key={artifacts[artifacts.length - 1]?.id || "artifact-panel"}
               artifacts={artifacts}
               onClose={() => setArtifactPanelOpen(false)}
               onEdit={(artifact) => setEditingArtifact(artifact)}

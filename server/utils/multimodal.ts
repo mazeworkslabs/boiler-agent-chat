@@ -18,6 +18,8 @@ const UPLOADS_DIR = path.join(process.cwd(), "uploads");
 // or:      <attachment type="image" id="uuid" filename="photo.png" mimeType="image/png" />
 const ATTACHMENT_RE =
   /<attachment\s+type="([^"]+)"\s+id="([^"]+)"\s+filename="([^"]+)"(?:\s+mimeType="([^"]+)")?\s*\/>/g;
+const FILE_BLOCK_RE = /<file\s+name="([^"]+)"[^>]*>[\s\S]*?<\/file>/g;
+const EXISTING_ARTIFACT_RE = /<existing-artifact(?:\s+type="([^"]+)")?>[\s\S]*?<\/existing-artifact>/g;
 
 interface ParsedAttachment {
   type: "pdf" | "image";
@@ -170,4 +172,42 @@ export function buildAnthropicContent(
 export function hasAttachments(content: string): boolean {
   ATTACHMENT_RE.lastIndex = 0;
   return ATTACHMENT_RE.test(content);
+}
+
+export function hasEmbeddedPayloads(content: string): boolean {
+  ATTACHMENT_RE.lastIndex = 0;
+  FILE_BLOCK_RE.lastIndex = 0;
+  EXISTING_ARTIFACT_RE.lastIndex = 0;
+  return ATTACHMENT_RE.test(content) || FILE_BLOCK_RE.test(content) || EXISTING_ARTIFACT_RE.test(content);
+}
+
+export function compressMessageForModelHistory(content: string): string {
+  const attachmentLabels: string[] = [];
+
+  const textWithoutAttachments = content.replace(
+    ATTACHMENT_RE,
+    (_, type, _id, filename) => {
+      attachmentLabels.push(
+        type === "pdf"
+          ? `[Tidigare bifogad PDF: ${filename}]`
+          : `[Tidigare bifogad bild: ${filename}]`
+      );
+      return "";
+    }
+  );
+
+  const textWithoutFiles = textWithoutAttachments.replace(
+    FILE_BLOCK_RE,
+    (_, filename) => {
+      attachmentLabels.push(`[Tidigare bifogad fil: ${filename}]`);
+      return "";
+    }
+  );
+
+  const textWithoutArtifacts = textWithoutFiles.replace(
+    EXISTING_ARTIFACT_RE,
+    (_, type) => `[Tidigare artifact-innehall bifogat${type ? ` (${type})` : ""}]`
+  );
+
+  return [textWithoutArtifacts.trim(), ...attachmentLabels].filter(Boolean).join("\n\n");
 }

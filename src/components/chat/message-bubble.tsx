@@ -34,7 +34,11 @@ interface ParsedAttachment {
 function extractAttachments(content: string): { text: string; attachments: ParsedAttachment[] } {
   const attachments: ParsedAttachment[] = [];
 
-  let text = content
+  const text = content
+    .replace(/\[REDIGERA ARTIFACT:\s*"([^"]+)"\]\s*/g, (_, title) => {
+      attachments.push({ type: "ART", filename: title });
+      return "";
+    })
     // <attachment type="pdf" id="..." filename="report.pdf" />
     .replace(/<attachment\s+type="([^"]+)"\s+id="[^"]+"\s+filename="([^"]+)"(?:\s+mimeType="[^"]+")?\s*\/>/g, (_, type, filename) => {
       attachments.push({ type: type.toUpperCase(), filename });
@@ -44,6 +48,10 @@ function extractAttachments(content: string): { text: string; attachments: Parse
     .replace(/<file\s+name="([^"]+)"[^>]*>[\s\S]*?<\/file>/g, (_, filename) => {
       const ext = filename.split(".").pop()?.toUpperCase() || "FIL";
       attachments.push({ type: ext, filename });
+      return "";
+    })
+    .replace(/<existing-artifact(?:\s+type="[^"]+")?>[\s\S]*?<\/existing-artifact>/g, () => {
+      attachments.push({ type: "HTML", filename: "Befintlig artifact" });
       return "";
     })
     .trim();

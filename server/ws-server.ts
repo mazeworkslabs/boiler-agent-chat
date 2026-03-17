@@ -53,7 +53,7 @@ export function createWSServer(): WebSocketServer {
             await sessionManager.createSession(ws, userEmail);
             break;
           case "chat":
-            await sessionManager.handleChat(ws, userEmail, msg.sessionId, msg.content, msg.provider, msg.model, msg.attachments, msg.agentMode);
+            await sessionManager.handleChat(ws, userEmail, msg.sessionId, msg.content, msg.provider, msg.model, msg.attachments, msg.agentMode, msg.turnId);
             break;
           case "abort":
             sessionManager.abortSession(msg.sessionId);
