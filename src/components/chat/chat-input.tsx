@@ -86,6 +86,7 @@ export function ChatInput({ onSend, onAbort, disabled }: ChatInputProps) {
   }, []);
 
   const handleSubmit = () => {
+    if (uploading) return; // Wait for file upload to finish
     const trimmed = value.trim();
     if ((!trimmed && files.length === 0) || disabled) return;
     onSend(trimmed || "(Se bifogade filer)", provider, model, files.length > 0 ? files : undefined, agentMode);
@@ -274,7 +275,7 @@ export function ChatInput({ onSend, onAbort, disabled }: ChatInputProps) {
           ) : (
             <button
               onClick={handleSubmit}
-              disabled={!value.trim() && files.length === 0}
+              disabled={uploading || (!value.trim() && files.length === 0)}
               className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-primary text-primary-foreground transition-colors duration-200 hover:opacity-90 disabled:opacity-50"
               aria-label="Skicka meddelande"
             >
