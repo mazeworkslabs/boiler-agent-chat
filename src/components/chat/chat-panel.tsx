@@ -51,7 +51,7 @@ export function ChatPanel({ sessionId, onSessionCreated, onArtifact, artifactCou
   const [activeAgent, setActiveAgent] = useState<string | null>(null);
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
-  const pendingMessageRef = useRef<{ content: string; provider: string; model: string; agentMode?: AgentMode } | null>(null);
+  const pendingMessageRef = useRef<{ content: string; provider: string; model: string; agentMode?: AgentMode; files?: AttachedFile[] } | null>(null);
   const streamingRef = useRef("");
   const sessionIdRef = useRef<string | null>(sessionId);
   // Stable refs for callbacks — avoids re-creating onMessage
@@ -100,6 +100,7 @@ export function ChatPanel({ sessionId, onSessionCreated, onArtifact, artifactCou
             content: pending.content,
             provider: pending.provider,
             model: pending.model,
+            ...(pending.files && pending.files.length > 0 ? { attachments: pending.files } : {}),
             ...(pending.agentMode && pending.agentMode !== "auto" ? { agentMode: pending.agentMode } : {}),
           });
         }
@@ -246,7 +247,7 @@ export function ChatPanel({ sessionId, onSessionCreated, onArtifact, artifactCou
 
     const currentSessionId = sessionIdRef.current;
     if (!currentSessionId) {
-      pendingMessageRef.current = { content: fullContent, provider, model, agentMode };
+      pendingMessageRef.current = { content: fullContent, provider, model, agentMode, files };
       send({ type: "new_session" });
       return;
     }
