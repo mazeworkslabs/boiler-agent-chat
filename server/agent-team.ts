@@ -573,6 +573,7 @@ async function* runSubAgentGemini(
     });
 
     let hasToolCall = false;
+    let isThinking = false;
     const functionCallParts: Array<{ name: string; args: Record<string, unknown> }> = [];
     const allParts: Part[] = [];
     let lastUsage: { promptTokenCount?: number; candidatesTokenCount?: number } = {};
@@ -584,7 +585,11 @@ async function* runSubAgentGemini(
 
       for (const part of candidate.content.parts) {
         allParts.push(part);
-        if (part.thought) continue;
+        if (part.thought) {
+          if (!isThinking) { isThinking = true; yield { type: "thinking" }; }
+          continue;
+        }
+        isThinking = false;
         if (part.text) yield { type: "text_delta", content: part.text };
         if (part.functionCall) {
           hasToolCall = true;
@@ -666,6 +671,7 @@ async function* runLeadAgentGemini(
     });
 
     let hasToolCall = false;
+    let isThinking = false;
     const functionCallParts: Array<{ name: string; args: Record<string, unknown> }> = [];
     const allParts: Part[] = [];
     let lastUsage: { promptTokenCount?: number; candidatesTokenCount?: number } = {};
@@ -677,7 +683,11 @@ async function* runLeadAgentGemini(
 
       for (const part of candidate.content.parts) {
         allParts.push(part);
-        if (part.thought) continue;
+        if (part.thought) {
+          if (!isThinking) { isThinking = true; yield { type: "thinking" }; }
+          continue;
+        }
+        isThinking = false;
         if (part.text) yield { type: "text_delta", content: part.text };
         if (part.functionCall) {
           hasToolCall = true;
