@@ -1,16 +1,19 @@
 /**
- * Agent Team — Multi-agent orchestration for complex tasks.
+ * Agent Team — Lead agent with delegation to specialists.
  *
- * 6 specialized agents:
- *   db_researcher  — database queries (has full schema injected)
- *   web_researcher  — web search + crawling (Gemini Google Search grounding)
- *   analyst         — data analysis + code execution + charts
- *   doc_designer    — file generation (.pptx, .docx, .xlsx, .pdf)
- *   artifact_designer — interactive HTML dashboards + visualizations
- *   writer          — text output (reports, summaries, emails) — no tools
+ * Architecture:
+ *   Lead agent (smart model) ↔ User
+ *     - Has all basic tools (query_database, run_code, web_search, etc.)
+ *     - Can delegate complex tasks to specialist sub-agents
+ *     - Sees all results and synthesizes responses
  *
- * The orchestrator classifies incoming requests and routes to the right agents.
- * Agents run sequentially, sharing context via accumulated output.
+ * Specialists (invoked via delegate tool):
+ *   db_researcher  — focused DB queries with full schema
+ *   api_researcher — external API calls (SCB PxWeb etc.)
+ *   web_researcher — web search (Google Search grounding on Gemini)
+ *   analyst        — data analysis, charts, Python
+ *   doc_designer   — .pptx, .xlsx, .docx creation
+ *   artifact_designer — interactive HTML dashboards
  */
 
 import Anthropic from "@anthropic-ai/sdk";
@@ -21,6 +24,7 @@ import {
   type LLMProvider,
   type LLMStreamEvent,
   type ChatMessage,
+  type ToolResult,
   executeTool,
   DEFAULT_ANTHROPIC_MODEL,
   DEFAULT_GEMINI_MODEL,
@@ -51,7 +55,7 @@ import { getSchemaContext } from "./db/schema-cache";
 import path from "path";
 
 // ---------------------------------------------------------------------------
-// Tool registry
+// Tool registry (shared between lead agent and specialists)
 // ---------------------------------------------------------------------------
 
 const TOOL_DEFS: Record<string, { anthropic: object; gemini: object }> = {
@@ -64,7 +68,71 @@ const TOOL_DEFS: Record<string, { anthropic: object; gemini: object }> = {
 };
 
 // ---------------------------------------------------------------------------
-// Skill → Agent routing
+// Delegate tool definition
+// ---------------------------------------------------------------------------
+
+const SPECIALIST_NAMES = [
+  "db_researcher",
+  "api_researcher",
+  "web_researcher",
+  "analyst",
+  "doc_designer",
+  "artifact_designer",
+] as const;
+
+const delegateToolAnthropic = {
+  name: "delegate",
+  description: `Delegate a complex task to a specialist sub-agent. Use this when the task needs focused expertise.
+
+Available specialists:
+- db_researcher: Query internal databases (company financials, KPIs, planning). Has full DB schema.
+- api_researcher: Fetch fresh data from external APIs (SCB PxWeb etc.) via Python code.
+- web_researcher: Search the web for news, reports, qualitative info. Do NOT use for data already in a PDF or database.
+- analyst: Data analysis, charts, calculations with Python. Can read uploaded PDFs/images directly.
+- doc_designer: Create/edit professional files (.pptx, .xlsx, .docx). Uses gemini-pro model. Can read uploaded PDFs.
+- artifact_designer: Create interactive HTML dashboards shown in preview panel.
+
+IMPORTANT: Include ALL relevant context in the task description — the specialist only sees what you give it.
+If the user uploaded a PDF or image, mention that it's attached — the specialist can see it too.`,
+  input_schema: {
+    type: "object" as const,
+    properties: {
+      agent: {
+        type: "string" as const,
+        enum: SPECIALIST_NAMES as unknown as string[],
+        description: "Which specialist to delegate to",
+      },
+      task: {
+        type: "string" as const,
+        description: "Detailed task description with all relevant context, data, and requirements",
+      },
+    },
+    required: ["agent", "task"],
+  },
+};
+
+const delegateToolGemini: FunctionDeclaration = {
+  name: "delegate",
+  description: delegateToolAnthropic.description,
+  parameters: {
+    type: "OBJECT" as any, // eslint-disable-line @typescript-eslint/no-explicit-any
+    properties: {
+      agent: {
+        type: "STRING" as any, // eslint-disable-line @typescript-eslint/no-explicit-any
+        enum: [...SPECIALIST_NAMES],
+        description: "Which specialist to delegate to",
+      },
+      task: {
+        type: "STRING" as any, // eslint-disable-line @typescript-eslint/no-explicit-any
+        description: "Detailed task description with all relevant context, data, and requirements",
+      },
+    },
+    required: ["agent", "task"],
+  },
+};
+
+// ---------------------------------------------------------------------------
+// Skill loading
 // ---------------------------------------------------------------------------
 
 const SKILL_AGENT_MAP: Record<string, string[]> = {
@@ -77,8 +145,17 @@ const SKILL_AGENT_MAP: Record<string, string[]> = {
   "pdf": ["doc_designer"],
 };
 
+let cachedSkills: Skill[] | null = null;
+
+function getSkills(): Skill[] {
+  if (!cachedSkills) {
+    cachedSkills = loadSkills(path.resolve(process.cwd()));
+  }
+  return cachedSkills;
+}
+
 // ---------------------------------------------------------------------------
-// Agent definitions
+// Specialist agent definitions
 // ---------------------------------------------------------------------------
 
 interface AgentDef {
@@ -87,89 +164,29 @@ interface AgentDef {
   emoji: string;
   promptTemplate: string;
   toolNames: string[];
-  /** Override model per provider for this agent */
   modelOverride?: { gemini?: string; anthropic?: string };
   geminiOverrides?: {
-    toolNames?: string[];      // override tools for Gemini
-    googleSearch?: boolean;    // enable Google Search grounding
+    toolNames?: string[];
+    googleSearch?: boolean;
   };
 }
 
-const AGENTS: Record<string, AgentDef> = {
+const SPECIALISTS: Record<string, AgentDef> = {
   db_researcher: {
     name: "db_researcher",
     label: "Databasforskare",
     emoji: "🗄️",
     toolNames: ["query_database"],
-    promptTemplate: `Du är en databasspecialist för Business Falkenberg.
-
-Du har KOMPLETT kunskap om alla databaser. Använd schemat nedan — gissa ALDRIG kolumnnamn.
+    promptTemplate: `Du är en databasspecialist. Hämta exakt den data som efterfrågas.
 
 ## Databasschema
-
 {schema}
 
-## STEG 1 — Hitta senaste data FÖRST (OBLIGATORISKT)
-
-Innan du hämtar data, kör ALLTID en query per relevant tabell för att hitta senaste tillgängliga år:
-
-\`\`\`sql
--- Exempel för company_financials:
-SELECT MAX(bokslutsaar) FROM company_financials;
--- Exempel för indicator_values:
-SELECT indicator_id, MAX(year) FROM indicator_values GROUP BY indicator_id;
--- Exempel för scb_income_distribution:
-SELECT MAX(year) FROM scb_income_distribution;
-\`\`\`
-
-Använd sedan det senaste året i dina dataqueries. Anta ALDRIG att senaste år är 2023 — det kan vara 2024 eller 2025.
-
 ## Riktlinjer
-- Använd EXAKT de kolumnnamn som finns i schemat ovan
-- Kör FLERA queries om det behövs — grunddata + kontext + jämförelser
-- Kombinera data från FLERA databaser om det ger rikare kontext
+- Använd EXAKT kolumnnamn från schemat — gissa ALDRIG
+- Kör ALLTID först: SELECT MAX(year/bokslutsaar) för att hitta senaste data
 - Falkenbergs kommun-id är '1382'
-- Använd LIMIT om du inte vet hur stor resultatet blir
-- Leverera STRUKTURERAD data — analysen gör en annan specialist
-- Om data saknas, notera det tydligt
-- Inkludera ALLTID vilket år datan gäller
-
-Svara med:
-1. Senaste tillgängliga år per datakälla
-2. Vilka queries du körde (med databas)
-3. Eventuella begränsningar i datan
-
-{skills}`,
-  },
-
-  web_researcher: {
-    name: "web_researcher",
-    label: "Webbforskare",
-    emoji: "🌐",
-    // Anthropic: uses web_search + web_fetch + browse_web
-    toolNames: ["web_search", "web_fetch", "browse_web"],
-    // Gemini: Google Search grounding ONLY (can't mix with function declarations)
-    geminiOverrides: {
-      toolNames: [],
-      googleSearch: true,
-    },
-    promptTemplate: `Du är en omvärldsresearcher för Business Falkenberg.
-
-Din uppgift är att hitta extern information från webben — nyheter, rapporter, benchmarks, statistik.
-
-## Riktlinjer
-- Sök brett och djupt — använd flera söktermer
-- Hämta och läs relevanta sidor för att få detaljerad information
-- Använd browse_web för JavaScript-tunga sidor (SPAs, dynamiska dashboards)
-- Använd web_fetch för enkla text/HTML-sidor och API:er
-- Sammanfatta fynd med källhänvisningar (URL:er)
-- Fokusera på FAKTA, inte åsikter
-- Om du hittar data som kan jämföras med intern data, notera det
-
-Svara med:
-1. Sammanfattning av fynd
-2. Detaljerade data/citat med källhänvisning
-3. Relevanta URL:er
+- Leverera STRUKTURERAD data med årtal — analysen görs av den som bad dig
 
 {skills}`,
   },
@@ -179,18 +196,29 @@ Svara med:
     label: "API-forskare",
     emoji: "📡",
     toolNames: ["run_code"],
-    promptTemplate: `Du är en expert på att hämta data från externa API:er för Business Falkenberg.
+    promptTemplate: `Du hämtar data från externa API:er (främst SCB PxWeb) via Python.
 
-Din huvudsakliga datakälla är SCB:s PxWeb API, men du kan även hämta data från andra öppna API:er.
+## Riktlinjer
+- Använd run_code med Python
+- SCB: hämta metadata (GET) först, filtrera med "top" för senaste data
+- Inkludera Falkenberg (1382) och Riket (00) för jämförelse
+- SCB returnerar ANTAL — beräkna andelar själv
+- Rate limit: time.sleep(0.5) mellan anrop
 
-## VIKTIGT
-- Använd ALLTID run_code med Python för att göra API-anrop
-- Hämta ALLTID metadata (GET) först för att se variabelkoder och tillgängliga år
-- Inkludera alltid Falkenberg (1382) och gärna Riket (00) för jämförelse
-- SCB returnerar ANTAL, inte procent — beräkna andelar själv
-- Använd filter "top" för senaste data, inte hårdkodade år
-- Rate limit: 30 req / 10 sek — lägg in time.sleep(0.5) mellan anrop
-- Presentera resultaten som strukturerad data — analysen gör en annan specialist
+{skills}`,
+  },
+
+  web_researcher: {
+    name: "web_researcher",
+    label: "Webbforskare",
+    emoji: "🌐",
+    toolNames: ["web_search", "web_fetch", "browse_web"],
+    geminiOverrides: { toolNames: [], googleSearch: true },
+    promptTemplate: `Du söker information på webben.
+
+VIKTIGT: Sök BARA det som uttryckligen efterfrågas. Om informationen redan finns i uppgiftsbeskrivningen — SÖK INTE efter den.
+
+Leverera fakta med URL-källhänvisningar.
 
 {skills}`,
   },
@@ -200,23 +228,14 @@ Din huvudsakliga datakälla är SCB:s PxWeb API, men du kan även hämta data fr
     label: "Analytiker",
     emoji: "📊",
     toolNames: ["run_code"],
-    promptTemplate: `Du är en analytiker för Business Falkenberg.
+    promptTemplate: `Du analyserar data och skapar diagram med Python.
 
-Din uppgift är att analysera data och producera insikter med Python-kod.
-
-## VIKTIGT — Kör alltid kod
-Du MÅSTE använda run_code för ALLA beräkningar. Gissa aldrig siffror.
-
-## Riktlinjer
-- Använd pandas för datamanipulation
-- Skapa diagram med matplotlib/seaborn — spara som PNG med beskrivande namn
-- Beräkna: trender, procentuella förändringar, jämförelser, rankningar
-- Identifiera mönster, avvikelser och nyckelfynd
-- Formulera 3–5 konkreta insikter
+## VIKTIGT
+- Använd run_code för ALLA beräkningar — gissa aldrig
+- Om en PDF är bifogad: extrahera ALLA relevanta datapunkter
+- Skapa diagram med matplotlib — spara som PNG
 - BF-färger: #1B5E7B (primär), #E8A838 (guld), #2E8B57 (grön), #0D3B52 (mörk)
-- Avsluta med tydlig sammanfattning — nästa agent bygger vidare
-
-Diagramfiler du sparar blir automatiskt tillgängliga för designer-agenten.
+- Leverera en KOMPLETT sammanfattning av alla datapunkter och insikter
 
 {skills}`,
   },
@@ -227,38 +246,17 @@ Diagramfiler du sparar blir automatiskt tillgängliga för designer-agenten.
     emoji: "📑",
     toolNames: ["run_code"],
     modelOverride: { gemini: "gemini-3.1-pro-preview" },
-    promptTemplate: `Du är en dokumentdesigner för Business Falkenberg.
+    promptTemplate: `Du skapar professionella nedladdningsbara filer med Python.
 
-Din uppgift är att skapa professionella nedladdningsbara filer.
-
-## Verktyg
-Du har run_code som kör Python i en sandbox med dessa bibliotek:
-- python-pptx (presentationer .pptx)
-- openpyxl (Excel .xlsx)
-- python-docx (Word .docx — om tillgängligt)
-- Pillow, matplotlib (bilder och diagram)
+## Bibliotek: python-pptx, openpyxl, python-docx, Pillow, matplotlib
 
 ## VIKTIGT
-- Anropa ALLTID run_code — skriv aldrig bara kodsnuttar som text
-- Filer som sparas i arbetskatalogen blir automatiskt nedladdningsbara
-- Diagrambilder från analytikern finns i arbetskatalogen — använd dem!
-- Följ ALLTID Business Falkenbergs grafiska profil
-
-## Redigera befintliga filer
-
-Tidigare genererade filer i sessionen finns redan i arbetskatalogen. Om användaren ber dig redigera/uppdatera ett dokument:
-
-1. Lista filer först: \`import os; print(os.listdir('.'))\`
-2. Öppna befintlig fil: \`prs = Presentation("filnamn.pptx")\` eller \`wb = load_workbook("filnamn.xlsx")\`
-3. Gör ändringarna
-4. Spara med SAMMA filnamn för att ersätta, eller nytt namn för en ny version
-
-Skapa ALDRIG en ny fil från scratch om användaren ber dig ändra en befintlig.
-
-## Riktlinjer
-- Variera layouter — inte bara text och bullet points
-- Inkludera visuella element på varje sida/sektion
-- Ge en kort sammanfattning EFTER att filen skapats
+- Anropa ALLTID run_code — skriv aldrig bara kod som text
+- Om en PDF är bifogad: basera dokumentet på DESS innehåll
+- Basera på ALL data du fått i uppgiftsbeskrivningen
+- Diagrambilder finns i arbetskatalogen — använd dem!
+- Följ Business Falkenbergs grafiska profil
+- Vid redigering: öppna befintlig fil, ändra, spara med samma namn
 
 {skills}`,
   },
@@ -268,259 +266,106 @@ Skapa ALDRIG en ny fil från scratch om användaren ber dig ändra en befintlig.
     label: "Artifaktdesigner",
     emoji: "✨",
     toolNames: ["create_artifact"],
-    promptTemplate: `Du är en UI-designer för Business Falkenberg.
+    promptTemplate: `Du skapar interaktiva HTML-dashboards som visas i en preview-panel.
 
-Din uppgift är att skapa interaktiva HTML-dashboards och visualiseringar som visas i en preview-panel.
+Använd ALLTID create_artifact med type "html" och en komplett HTML-sida.
+CDN: Tailwind CSS, Chart.js, D3.js, Three.js, Mermaid, Recharts
+BF-färger: #1f4e99, #009fe3, #52ae32, #f39200, #13153b
 
-## VIKTIGT — Använd ALLTID create_artifact
-Anropa create_artifact med:
-- title: Beskrivande titel
-- type: "html"
-- content: En KOMPLETT HTML-sida (<html>, <head>, <body>)
-
-Skriv ALDRIG HTML-kod som text. Använd ALLTID create_artifact-verktyget.
-
-## REDIGERING AV BEFINTLIG ARTIFACT
-Om meddelandet innehåller <existing-artifact>-taggar har användaren tryckt "Redigera" på en befintlig artifact.
-- Gör BARA de ändringar användaren ber om — ändra INTE resten av HTML:en
-- Behåll all befintlig struktur, data och styling
-- Anropa create_artifact med den uppdaterade HTML:en (samma title om inte annat anges)
-
-## Tillgängliga CDN-bibliotek (injiceras automatiskt)
-Tailwind CSS, Chart.js, D3.js, Three.js, Mermaid, Recharts
-
-## BILDER I ARTIFACTS
-Artifacts körs i en sandboxad iframe. Du kan INTE referera bilder från sessionen (screenshots, diagram-PNG:er).
-Istället:
-- Skapa diagram DIREKT i HTML med Chart.js eller D3.js — bädda in datan i koden
-- Använd SVG-grafik istället för bilder
-- Om du har sifferdata från analytikern, bygg diagrammet i JavaScript i artifakten
-
-## Riktlinjer
-- Skapa responsiva, interaktiva dashboards
-- Använd BF-färger: #1f4e99, #009fe3, #52ae32, #f39200, #13153b
-- Inkludera diagram (Chart.js/D3), nyckeltal (KPIs), tabeller
-- Gör det visuellt tilltalande och professionellt
-- Ge en kort sammanfattning EFTER att artifakten skapats
-
-{skills}`,
-  },
-
-  writer: {
-    name: "writer",
-    label: "Skribent",
-    emoji: "✍️",
-    toolNames: [],
-    promptTemplate: `Du är en professionell skribent för Business Falkenberg.
-
-Din uppgift är att skriva text direkt i chatten — rapporter, sammanfattningar, e-post, texter, analyser.
-
-## Riktlinjer
-- Skriv professionellt och koncist
-- Strukturera med rubriker, punktlistor och styckeindelning
-- Anpassa ton efter mottagare (intern rapport vs externt nyhetsbrev)
-- Basera ALLT på data och insikter från kontexten nedan
-- Inkludera konkreta siffror och exempel
-- Om det är ett mejl, inkludera ämnesrad
+Om <existing-artifact>-taggar finns: gör BARA de ändringar som efterfrågas.
 
 {skills}`,
   },
 };
 
 // ---------------------------------------------------------------------------
-// Orchestrator
+// Lead agent system prompt
 // ---------------------------------------------------------------------------
 
-const CLASSIFY_PROMPT = `Analysera användarens meddelande och bestäm om det kräver ett specialistteam eller kan besvaras direkt.
-
-Svara med JSON:
-
-Enkla uppgifter (hälsningar, korta frågor, förklaringar, enkel datauppslag):
-{"mode":"simple"}
-
-Komplexa uppgifter:
-{"mode":"team","tasks":[
-  {"agent":"<agent_name>","task":"Specifik instruktion..."},
-  ...
-]}
-
-## Vad finns i våra databaser (db_researcher)
-
-Vi har data internt — använd db_researcher när frågan handlar om data som finns i våra databaser.
-Om användaren hänvisar till en SPECIFIK extern källa (PDF, URL, rapport), prioritera den källan — använd INTE db_researcher för att "komplettera" om det inte uttryckligen efterfrågas.
-
-### fbg_analytics — Företagsdata
-- company_financials: bokslut per företag/år (omsättning, anställda, bransch, soliditet, rörelsemarginal) för alla företag i Falkenberg
-- job_postings: platsannonser
-- scb_employment_stats: sysselsättningsstatistik
-
-### naringslivsklimat — Benchmarking 14 kustkommuner (Göteborg→Malmö längs E6/Kattegatt)
-Kommuner: Falkenberg, Göteborg, Kungsbacka, Varberg, Halmstad, Laholm, Båstad, Ängelholm, Höganäs, Helsingborg, Landskrona, Kävlinge, Lomma, Malmö
-- indicator_values: 24+ KPIs per kommun/år (2010-nutid): nya företag, konkurser, sysselsättning, branschbredd, omsättning, pendling, utbildning, befolkning, medianinkomst, skattekraft
-- scb_housing_detail: bostadspriser per kommun (permanent/fritid)
-- scb_income_distribution: inkomstfördelning P1-P100, D1-D10 per kommun
-- scb_leading_indicators: bygglov, bilregistreringar, befolkningsförändringar (månad/kvartal)
-
-### fbg_planning — Århjulet
-- activities, focus_areas, strategic_concepts
-
-## Tillgängliga agenter
-
-- db_researcher — hämtar data från ALLA databaser ovan (komplett schema injicerat)
-- api_researcher — hämtar FÄRSK data direkt från externa API:er (SCB PxWeb, m.fl.) via Python-kod. Använd när data saknas i våra databaser eller behöver vara mer aktuell.
-- web_researcher — söker på webben — BARA för nyheter, rapporter, kvalitativ info (INTE statistik — använd api_researcher istället)
-- analyst — analyserar data, kör Python-kod, skapar diagram
-- doc_designer — skapar OCH REDIGERAR nedladdningsbara filer (.pptx, .xlsx, .docx). Kan öppna och ändra befintliga filer från sessionen!
-- artifact_designer — skapar interaktiva HTML-dashboards i preview-panelen
-- writer — skriver text direkt i chatten (rapporter, mejl, sammanfattningar)
-
-## VIKTIGT: Redigering av befintliga filer
-
-doc_designer kan REDIGERA filer som redan skapats i sessionen. Om användaren ber om ändringar i en befintlig fil (t.ex. "lägg till slides", "ändra data till 2024", "uppdatera diagrammet"):
-- Skapa INTE allt från scratch — be doc_designer redigera den befintliga filen
-- Om ny data behövs (t.ex. "ändra till 2024") → kör db_researcher FÖRST för att hämta uppdaterad data, SEN doc_designer för att redigera filen
-- Ange filnamnet som ska redigeras i doc_designers task-beskrivning
-
-## Exempel
-
-- "Vilka är de 10 största företagen?" → {"mode":"simple"}
-- "Jämför Falkenberg med Varberg" → db_researcher → analyst (data FINNS i naringslivsklimat!)
-- "Analysera befolkningsutvecklingen med diagram" → db_researcher → analyst
-- "Skriv ett mejl om senaste kvartalet" → db_researcher → writer
-- "Gör en presentation om näringslivsklimatet" → db_researcher → analyst → doc_designer
-- "Skapa en dashboard över företagsdata" → db_researcher → analyst → artifact_designer
-- "Vad skriver media om Falkenbergs näringsliv?" → web_researcher (detta finns INTE i db)
-- "Jämför vår data med rikssnitt och nyheter" → db_researcher → web_researcher → analyst
-- "Hur ser befolkningsutvecklingen ut per åldersgrupp?" → api_researcher (detaljerad SCB-data) → analyst
-- "Hämta utbildningsnivå från SCB" → api_researcher → analyst
-- "Lägg till 2 slides om inkomst i presentationen" → doc_designer (redigera befintlig fil)
-- "Datan var för 2023, uppdatera till 2024" → db_researcher → doc_designer (hämta ny data, sen redigera filen)
-- "Ändra titeln på slide 3" → doc_designer (redigera befintlig fil, ingen ny data behövs)
-
-## Regler
-
-- Använd db_researcher för data som finns i våra databaser (fbg_analytics, naringslivsklimat, fbg_planning).
-- Använd api_researcher för FÄRSK statistik från SCB eller andra API:er — speciellt data vi inte har i egna databaser.
-- Använd web_researcher för nyheter, rapporter, kvalitativ info — INTE för statistik (api_researcher är bättre).
-- Jämförelser mellan kommuner → db_researcher (vi har 14 kommuner i naringslivsklimat!).
-- analyst behöver data — kör alltid researcher FÖRE analyst.
-- doc_designer och artifact_designer är ALDRIG i samma plan.
-- doc_designer → nedladdningsbar fil (.pptx, .xlsx, .docx) — kan REDIGERA befintliga filer
-- artifact_designer → interaktiv HTML i preview-panelen
-- writer → text direkt i chatten
-- Vid redigeringsförfrågningar för dokument: använd doc_designer DIREKT. Skapa INTE om hela filen.
-- Vid redigeringsförfrågningar för artifacts (HTML): använd artifact_designer DIREKT. Meddelandet innehåller befintlig HTML i <existing-artifact>-taggar.
-- Om meddelandet börjar med [REDIGERA ARTIFACT] → kör ALLTID artifact_designer direkt, inga andra agenter behövs.
-- Varje task-beskrivning ska vara SPECIFIK. Vid redigering: ange exakt vad som ska ändras.
-- Om konversationshistoriken innehåller data (t.ex. från en PDF, URL eller tidigare agent), ÅTERANVÄND den — kör INTE samma sökningar igen.
-- Om användaren refererar till en extern källa (PDF, rapport, URL), basera arbetet på DEN källans innehåll — komplettera INTE med DB-data om det inte efterfrågas.
-
-Svara BARA med JSON.`;
-
-interface AgentTask {
-  agent: string;
-  task: string;
-}
-
-interface Plan {
-  mode: "simple" | "team";
-  tasks?: AgentTask[];
-}
-
-async function classifyTask(userMessage: string, conversationSummary: string, provider: LLMProvider): Promise<Plan> {
-  try {
-    let text: string;
-
-    // Build classifier input: conversation context + current message
-    const classifierInput = conversationSummary
-      ? `## Konversationshistorik (sammanfattning)\n${conversationSummary}\n\n## Senaste meddelande (detta ska besvaras)\n${userMessage}`
-      : userMessage;
-
-    if (process.env.GEMINI_API_KEY) {
-      const client = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-      const res = await client.models.generateContent({
-        model: "gemini-3.1-flash-lite-preview",
-        contents: [{ role: "user", parts: [{ text: classifierInput }] }],
-        config: { systemInstruction: CLASSIFY_PROMPT },
-      });
-      text = res.text || "";
-    } else {
-      const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-      const res = await client.messages.create({
-        model: DEFAULT_ANTHROPIC_MODEL,
-        max_tokens: 512,
-        system: CLASSIFY_PROMPT,
-        messages: [{ role: "user", content: classifierInput }],
-      });
-      text = (res.content.find((b) => b.type === "text") as Anthropic.TextBlock)?.text || "";
-    }
-
-    const match = text.match(/\{[\s\S]*\}/);
-    if (!match) return { mode: "simple" };
-
-    const plan: Plan = JSON.parse(match[0]);
-    if (plan.mode === "team" && Array.isArray(plan.tasks) && plan.tasks.length > 0) {
-      const valid = plan.tasks.filter(
-        (t) => t.agent in AGENTS && typeof t.task === "string" && t.task.length > 0
-      );
-      if (valid.length > 0) {
-        console.log(`[AgentTeam] Plan: ${valid.map((t) => t.agent).join(" → ")}`);
-        return { mode: "team", tasks: valid };
-      }
-    }
-
-    return { mode: "simple" };
-  } catch (err) {
-    console.error("[AgentTeam] Classification error:", err);
-    return { mode: "simple" };
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Prompt builder
-// ---------------------------------------------------------------------------
-
-let cachedSkills: Skill[] | null = null;
-
-function getSkills(): Skill[] {
-  if (!cachedSkills) {
-    cachedSkills = loadSkills(path.resolve(process.cwd()));
-  }
-  return cachedSkills;
-}
-
-function buildAgentSystemPrompt(agentDef: AgentDef, sharedContext: string): string {
+function buildLeadAgentPrompt(): string {
   const skills = getSkills();
+  const skillContext = buildSkillContext(skills);
+  const schemaContext = getSchemaContext();
 
-  // Filter skills for this agent
+  return `Du är en AI-assistent för Business Falkenberg. Du hjälper medarbetare med research, data, dokument och analys.
+
+## Hur du arbetar
+
+Du har verktyg du kan använda direkt:
+- query_database — fråga våra interna databaser
+- run_code — kör Python/JavaScript-kod
+- web_search + web_fetch — sök och hämta info från webben
+- create_artifact — skapa interaktiva HTML-dashboards
+- browse_web — besök webbsidor med headless browser
+
+Du kan också DELEGERA komplexa uppgifter till specialister med delegate-verktyget:
+- db_researcher — fokuserade databas-queries (har komplett schema)
+- api_researcher — hämtar data från externa API:er (SCB etc.)
+- web_researcher — djup webbsökning (Gemini: Google Search grounding)
+- analyst — dataanalys, diagram, beräkningar med Python
+- doc_designer — skapar .pptx, .xlsx, .docx (använder gemini-pro)
+- artifact_designer — interaktiva HTML-dashboards
+
+## När du gör det själv vs delegerar
+
+GÖR SJÄLV:
+- Enkel chatt, frågor, förklaringar
+- Enkla databas-queries (du har query_database)
+- Snabb kodkörning
+- Kort sammanfattning av en bifogad PDF
+
+DELEGERA:
+- Komplexa flerstegsprojekt (t.ex. "analysera data och gör en presentation")
+- Dokumentskapande (.pptx, .xlsx, .docx) — delegera till doc_designer
+- Djup dataanalys med diagram — delegera till analyst
+- Stora databas-undersökningar — delegera till db_researcher (har komplett schema)
+
+Du kan delegera FLERA gånger i rad, t.ex.:
+1. delegate till analyst ("analysera denna PDF och skapa diagram")
+2. Se resultatet
+3. delegate till doc_designer ("skapa en pptx baserad på analysen ovan")
+
+## Bifogade filer (PDF, bilder)
+
+Om användaren laddar upp en fil syns den som <attachment type="pdf" .../> i meddelandet.
+- Du KAN läsa den direkt (multimodal)
+- Specialister du delegerar till KAN OCKSÅ läsa den
+- SÖK INTE på webben efter innehåll som redan finns i en bifogad fil!
+
+## Våra databaser
+
+${schemaContext}
+
+Falkenbergs kommun-id: '1382'
+naringslivsklimat har 14 kustkommuner: Falkenberg, Göteborg, Kungsbacka, Varberg, Halmstad, Laholm, Båstad, Ängelholm, Höganäs, Helsingborg, Landskrona, Kävlinge, Lomma, Malmö
+
+## Riktlinjer
+- Svara alltid på svenska om inte användaren skriver på annat språk
+- Var professionell, koncis och hjälpsam
+- När du delegerar: inkludera ALL relevant kontext i task-beskrivningen
+- Om du delegerat och fått tillbaka resultat: syntetisera och presentera snyggt för användaren
+
+${skillContext}`;
+}
+
+// ---------------------------------------------------------------------------
+// Build specialist prompt
+// ---------------------------------------------------------------------------
+
+function buildSpecialistPrompt(agentDef: AgentDef): string {
+  const skills = getSkills();
   const agentSkills = skills.filter((s) => {
     const targets = SKILL_AGENT_MAP[s.name];
-    if (!targets) return true; // unmapped skills go to all agents
+    if (!targets) return false; // specialists only get their own skills
     return targets.includes(agentDef.name);
   });
 
   const skillContext = agentSkills.length > 0 ? buildSkillContext(agentSkills) : "";
 
-  let prompt = agentDef.promptTemplate
+  return agentDef.promptTemplate
     .replace("{skills}", skillContext)
-    .replace("{schema}", agentDef.name === "db_researcher" ? getSchemaContext() : "");
-
-  if (sharedContext) {
-    prompt += `\n\n---\n\n## Kontext från tidigare agenter:\n${sharedContext}`;
-  }
-
-  prompt += "\n\nSvara alltid på svenska om inte annat anges.";
-
-  return prompt;
-}
-
-function getToolsForAgent(agentDef: AgentDef, provider: LLMProvider): unknown[] {
-  const toolNames =
-    provider === "gemini" && agentDef.geminiOverrides?.toolNames
-      ? agentDef.geminiOverrides.toolNames
-      : agentDef.toolNames;
-
-  return toolNames.filter((name) => name in TOOL_DEFS).map((name) => TOOL_DEFS[name][provider]);
+    .replace("{schema}", agentDef.name === "db_researcher" ? getSchemaContext() : "")
+    + "\n\nSvara alltid på svenska om inte annat anges.";
 }
 
 // ---------------------------------------------------------------------------
@@ -533,10 +378,101 @@ interface CostAccumulator {
 }
 
 // ---------------------------------------------------------------------------
-// Agent runners
+// Execute delegate — runs a specialist sub-agent and collects results
 // ---------------------------------------------------------------------------
 
-async function* runAgentAnthropic(
+async function executeDelegate(
+  agentName: string,
+  task: string,
+  userMessage: string,
+  provider: LLMProvider,
+  model: string,
+  sessionId: string | undefined,
+  costs: CostAccumulator,
+  onEvent: (event: LLMStreamEvent) => void
+): Promise<ToolResult> {
+  const agentDef = SPECIALISTS[agentName];
+  if (!agentDef) {
+    return { success: false, result: `Unknown specialist: ${agentName}` };
+  }
+
+  onEvent({
+    type: "agent_status" as LLMStreamEvent["type"],
+    agent: agentDef.name,
+    content: `${agentDef.emoji} ${agentDef.label}: ${task.slice(0, 100)}...`,
+  });
+
+  const systemPrompt = buildSpecialistPrompt(agentDef);
+
+  // Specialist gets: the delegate task + the original user message (for attachments)
+  const fullTask = `## Uppgift\n${task}\n\n## Ursprungligt meddelande från användaren\n${userMessage}`;
+
+  // Get tools for specialist
+  const toolNames =
+    provider === "gemini" && agentDef.geminiOverrides?.toolNames
+      ? agentDef.geminiOverrides.toolNames
+      : agentDef.toolNames;
+  const tools = toolNames
+    .filter((name) => name in TOOL_DEFS)
+    .map((name) => TOOL_DEFS[name][provider]);
+
+  const agentModel =
+    (provider === "gemini" ? agentDef.modelOverride?.gemini : agentDef.modelOverride?.anthropic)
+    || model;
+
+  const useGoogleSearch = provider === "gemini" && agentDef.geminiOverrides?.googleSearch;
+
+  // Run the specialist sub-agent
+  let agentOutput = "";
+  const collectedFiles: Array<{ id: string; filename: string; mimeType: string; sizeBytes: number }> = [];
+  let collectedArtifact: ToolResult["artifact"] = undefined;
+
+  const runner =
+    provider === "anthropic"
+      ? runSubAgentAnthropic(systemPrompt, fullTask, tools as Anthropic.Tool[], agentModel, sessionId, costs)
+      : runSubAgentGemini(systemPrompt, fullTask, tools, agentModel, sessionId, costs, {
+          googleSearch: useGoogleSearch,
+        });
+
+  for await (const event of runner) {
+    // Forward events with agent tag
+    onEvent({ ...event, agent: agentDef.name } as LLMStreamEvent);
+
+    if (event.type === "text_delta" && event.content) {
+      agentOutput += event.content;
+    }
+    if (event.type === "files" && event.files) {
+      collectedFiles.push(...event.files);
+    }
+    if (event.type === "artifact") {
+      collectedArtifact = {
+        id: event.id!,
+        title: event.title!,
+        type: event.artifactType!,
+        content: event.content!,
+      };
+    }
+  }
+
+  onEvent({
+    type: "agent_status" as LLMStreamEvent["type"],
+    agent: agentDef.name,
+    content: `${agentDef.emoji} ${agentDef.label} klar`,
+  });
+
+  return {
+    success: true,
+    result: agentOutput || "(Specialisten returnerade inget textresultat)",
+    files: collectedFiles.length > 0 ? collectedFiles : undefined,
+    artifact: collectedArtifact,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Sub-agent runners (same as before, just renamed for clarity)
+// ---------------------------------------------------------------------------
+
+async function* runSubAgentAnthropic(
   systemPrompt: string,
   task: string,
   tools: Anthropic.Tool[],
@@ -547,8 +483,6 @@ async function* runAgentAnthropic(
   const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
   let messages: Anthropic.MessageParam[] = [{ role: "user", content: buildAnthropicContent(task) }];
-
-  // If no tools, do a single non-tool call
   const toolsParam = tools.length > 0 ? tools : undefined;
 
   while (true) {
@@ -585,56 +519,27 @@ async function* runAgentAnthropic(
     const toolResults: Anthropic.ToolResultBlockParam[] = [];
 
     for (const toolBlock of toolUseBlocks) {
-      yield {
-        type: "tool_use",
-        toolName: toolBlock.name,
-        toolId: toolBlock.id,
-        input: toolBlock.input as Record<string, unknown>,
-      };
+      yield { type: "tool_use", toolName: toolBlock.name, toolId: toolBlock.id, input: toolBlock.input as Record<string, unknown> };
 
-      const result = await executeTool(
-        toolBlock.name,
-        toolBlock.input as Record<string, unknown>,
-        sessionId
-      );
+      const result = await executeTool(toolBlock.name, toolBlock.input as Record<string, unknown>, sessionId);
 
       if (result.artifact) {
-        yield {
-          type: "artifact",
-          id: result.artifact.id,
-          title: result.artifact.title,
-          artifactType: result.artifact.type,
-          content: result.artifact.content,
-        };
+        yield { type: "artifact", id: result.artifact.id, title: result.artifact.title, artifactType: result.artifact.type, content: result.artifact.content };
       }
-
       if (result.files && result.files.length > 0) {
         yield { type: "files", files: result.files };
       }
 
-      yield {
-        type: "tool_result",
-        toolId: toolBlock.id,
-        success: result.success,
-        summary: result.result.slice(0, 200),
-      };
+      yield { type: "tool_result", toolId: toolBlock.id, success: result.success, summary: result.result.slice(0, 200) };
 
-      toolResults.push({
-        type: "tool_result",
-        tool_use_id: toolBlock.id,
-        content: result.result,
-      });
+      toolResults.push({ type: "tool_result", tool_use_id: toolBlock.id, content: result.result });
     }
 
-    messages = [
-      ...messages,
-      { role: "assistant", content: contentBlocks },
-      { role: "user", content: toolResults },
-    ];
+    messages = [...messages, { role: "assistant", content: contentBlocks }, { role: "user", content: toolResults }];
   }
 }
 
-async function* runAgentGemini(
+async function* runSubAgentGemini(
   systemPrompt: string,
   task: string,
   tools: unknown[],
@@ -647,7 +552,6 @@ async function* runAgentGemini(
 
   const contents: Content[] = [{ role: "user", parts: buildGeminiParts(task) }];
 
-  // Build tools config — function declarations + optional Google Search grounding
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const toolConfig: any[] = [];
   if (tools.length > 0) {
@@ -676,24 +580,15 @@ async function* runAgentGemini(
     for await (const chunk of stream) {
       const candidate = chunk.candidates?.[0];
       if (!candidate?.content?.parts) continue;
-
       if (chunk.usageMetadata) lastUsage = chunk.usageMetadata;
 
       for (const part of candidate.content.parts) {
         allParts.push(part);
-
         if (part.thought) continue;
-
-        if (part.text) {
-          yield { type: "text_delta", content: part.text };
-        }
-
+        if (part.text) yield { type: "text_delta", content: part.text };
         if (part.functionCall) {
           hasToolCall = true;
-          functionCallParts.push({
-            name: part.functionCall.name!,
-            args: (part.functionCall.args as Record<string, unknown>) || {},
-          });
+          functionCallParts.push({ name: part.functionCall.name!, args: (part.functionCall.args as Record<string, unknown>) || {} });
         }
       }
     }
@@ -714,32 +609,15 @@ async function* runAgentGemini(
       const result = await executeTool(fc.name, fc.args, sessionId);
 
       if (result.artifact) {
-        yield {
-          type: "artifact",
-          id: result.artifact.id,
-          title: result.artifact.title,
-          artifactType: result.artifact.type,
-          content: result.artifact.content,
-        };
+        yield { type: "artifact", id: result.artifact.id, title: result.artifact.title, artifactType: result.artifact.type, content: result.artifact.content };
       }
-
       if (result.files && result.files.length > 0) {
         yield { type: "files", files: result.files };
       }
 
-      yield {
-        type: "tool_result",
-        toolId,
-        success: result.success,
-        summary: result.result.slice(0, 200),
-      };
+      yield { type: "tool_result", toolId, success: result.success, summary: result.result.slice(0, 200) };
 
-      functionResponses.push({
-        functionResponse: {
-          name: fc.name,
-          response: { result: result.result },
-        },
-      });
+      functionResponses.push({ functionResponse: { name: fc.name, response: { result: result.result } } });
     }
 
     contents.push({ role: "user", parts: functionResponses });
@@ -747,43 +625,218 @@ async function* runAgentGemini(
 }
 
 // ---------------------------------------------------------------------------
-// Main entry point
+// Lead agent runner — Gemini
 // ---------------------------------------------------------------------------
 
-// ---------------------------------------------------------------------------
-// Conversation summary builder
-// ---------------------------------------------------------------------------
+async function* runLeadAgentGemini(
+  messages: ChatMessage[],
+  model: string,
+  sessionId: string | undefined,
+  costs: CostAccumulator,
+  eventBuffer: LLMStreamEvent[]
+): AsyncGenerator<LLMStreamEvent> {
+  const client = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+  const systemPrompt = buildLeadAgentPrompt();
 
-/**
- * Build a concise summary of conversation history for agent context.
- * Keeps recent messages in full and truncates older/long ones.
- * This ensures agents know what has been discussed, fetched, and produced.
- */
-function buildConversationSummary(messages: ChatMessage[]): string {
-  if (messages.length === 0) return "";
+  // Build contents from conversation history
+  const contents: Content[] = messages.map((m) => ({
+    role: m.role === "assistant" ? "model" : "user",
+    parts: buildGeminiParts(m.content),
+  }));
 
-  const MAX_TOTAL_CHARS = 12000;
-  const MAX_PER_MESSAGE = 3000;
-  const parts: string[] = [];
-  let totalChars = 0;
+  // All tools: regular + delegate
+  const allGeminiTools = [
+    ...Object.values(TOOL_DEFS).map((t) => t.gemini),
+    delegateToolGemini,
+  ];
+  const toolConfig = [{ functionDeclarations: allGeminiTools as FunctionDeclaration[] }];
 
-  // Process from newest to oldest, then reverse
-  for (let i = messages.length - 1; i >= 0 && totalChars < MAX_TOTAL_CHARS; i--) {
-    const msg = messages[i];
-    const role = msg.role === "user" ? "Användaren" : "Assistenten";
-    let content = msg.content;
+  // Keep track of user message for passing to delegates
+  const userMessage = messages[messages.length - 1]?.content || "";
 
-    if (content.length > MAX_PER_MESSAGE) {
-      content = content.slice(0, MAX_PER_MESSAGE) + "\n[...trunkerat...]";
+  while (true) {
+    const stream = await client.models.generateContentStream({
+      model,
+      contents,
+      config: {
+        systemInstruction: systemPrompt,
+        tools: toolConfig,
+        thinkingConfig: { includeThoughts: true },
+      },
+    });
+
+    let hasToolCall = false;
+    const functionCallParts: Array<{ name: string; args: Record<string, unknown> }> = [];
+    const allParts: Part[] = [];
+    let lastUsage: { promptTokenCount?: number; candidatesTokenCount?: number } = {};
+
+    for await (const chunk of stream) {
+      const candidate = chunk.candidates?.[0];
+      if (!candidate?.content?.parts) continue;
+      if (chunk.usageMetadata) lastUsage = chunk.usageMetadata;
+
+      for (const part of candidate.content.parts) {
+        allParts.push(part);
+        if (part.thought) continue;
+        if (part.text) yield { type: "text_delta", content: part.text };
+        if (part.functionCall) {
+          hasToolCall = true;
+          functionCallParts.push({ name: part.functionCall.name!, args: (part.functionCall.args as Record<string, unknown>) || {} });
+        }
+      }
     }
 
-    const entry = `**${role}:** ${content}`;
-    parts.unshift(entry);
-    totalChars += entry.length;
-  }
+    costs.inputTokens += lastUsage.promptTokenCount ?? 0;
+    costs.outputTokens += lastUsage.candidatesTokenCount ?? 0;
 
-  return parts.join("\n\n");
+    if (!hasToolCall) break;
+
+    contents.push({ role: "model", parts: allParts });
+
+    const functionResponses: Part[] = [];
+
+    for (const fc of functionCallParts) {
+      const toolId = `${fc.name}_${Date.now()}`;
+      yield { type: "tool_use", toolName: fc.name, toolId, input: fc.args };
+
+      let result: ToolResult;
+
+      if (fc.name === "delegate") {
+        // --- DELEGATION: Run specialist sub-agent ---
+        result = await executeDelegate(
+          fc.args.agent as string,
+          fc.args.task as string,
+          userMessage,
+          "gemini",
+          model,
+          sessionId,
+          costs,
+          (event) => eventBuffer.push(event)
+        );
+      } else {
+        // --- Regular tool execution ---
+        result = await executeTool(fc.name, fc.args, sessionId);
+      }
+
+      if (result.artifact) {
+        yield { type: "artifact", id: result.artifact.id, title: result.artifact.title, artifactType: result.artifact.type, content: result.artifact.content };
+      }
+      if (result.files && result.files.length > 0) {
+        yield { type: "files", files: result.files };
+      }
+
+      yield { type: "tool_result", toolId, success: result.success, summary: result.result.slice(0, 200) };
+
+      functionResponses.push({ functionResponse: { name: fc.name, response: { result: result.result } } });
+    }
+
+    contents.push({ role: "user", parts: functionResponses });
+  }
 }
+
+// ---------------------------------------------------------------------------
+// Lead agent runner — Anthropic
+// ---------------------------------------------------------------------------
+
+async function* runLeadAgentAnthropic(
+  messages: ChatMessage[],
+  model: string,
+  sessionId: string | undefined,
+  costs: CostAccumulator,
+  eventBuffer: LLMStreamEvent[]
+): AsyncGenerator<LLMStreamEvent> {
+  const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+  const systemPrompt = buildLeadAgentPrompt();
+
+  let anthropicMessages: Anthropic.MessageParam[] = messages.map((m) => ({
+    role: m.role,
+    content: buildAnthropicContent(m.content),
+  }));
+
+  const allTools = [
+    ...Object.values(TOOL_DEFS).map((t) => t.anthropic),
+    delegateToolAnthropic,
+  ] as Anthropic.Tool[];
+
+  const userMessage = messages[messages.length - 1]?.content || "";
+
+  while (true) {
+    const stream = client.messages.stream({
+      model,
+      max_tokens: 16384,
+      system: systemPrompt,
+      tools: allTools,
+      messages: anthropicMessages,
+    });
+
+    const contentBlocks: Anthropic.ContentBlock[] = [];
+
+    for await (const event of stream) {
+      if (event.type === "content_block_delta" && event.delta.type === "text_delta") {
+        yield { type: "text_delta", content: event.delta.text };
+      }
+    }
+
+    const finalMessage = await stream.finalMessage();
+    costs.inputTokens += finalMessage.usage.input_tokens;
+    costs.outputTokens += finalMessage.usage.output_tokens;
+
+    for (const block of finalMessage.content) {
+      contentBlocks.push(block);
+    }
+
+    const toolUseBlocks = contentBlocks.filter(
+      (b): b is Anthropic.ToolUseBlock => b.type === "tool_use"
+    );
+
+    if (toolUseBlocks.length === 0) break;
+
+    const toolResults: Anthropic.ToolResultBlockParam[] = [];
+
+    for (const toolBlock of toolUseBlocks) {
+      yield { type: "tool_use", toolName: toolBlock.name, toolId: toolBlock.id, input: toolBlock.input as Record<string, unknown> };
+
+      let result: ToolResult;
+
+      if (toolBlock.name === "delegate") {
+        const input = toolBlock.input as { agent: string; task: string };
+        result = await executeDelegate(
+          input.agent,
+          input.task,
+          userMessage,
+          "anthropic",
+          model,
+          sessionId,
+          costs,
+          (event) => eventBuffer.push(event)
+        );
+      } else {
+        result = await executeTool(toolBlock.name, toolBlock.input as Record<string, unknown>, sessionId);
+      }
+
+      if (result.artifact) {
+        yield { type: "artifact", id: result.artifact.id, title: result.artifact.title, artifactType: result.artifact.type, content: result.artifact.content };
+      }
+      if (result.files && result.files.length > 0) {
+        yield { type: "files", files: result.files };
+      }
+
+      yield { type: "tool_result", toolId: toolBlock.id, success: result.success, summary: result.result.slice(0, 200) };
+
+      toolResults.push({ type: "tool_result", tool_use_id: toolBlock.id, content: result.result });
+    }
+
+    anthropicMessages = [
+      ...anthropicMessages,
+      { role: "assistant", content: contentBlocks },
+      { role: "user", content: toolResults },
+    ];
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Main entry point
+// ---------------------------------------------------------------------------
 
 export type AgentTeamMode = "auto" | "team" | "simple";
 
@@ -794,109 +847,40 @@ export async function* streamAgentTeam(
   sessionId?: string,
   mode: AgentTeamMode = "auto"
 ): AsyncGenerator<LLMStreamEvent> {
-  const userMessage = messages[messages.length - 1]?.content || "";
   const resolvedModel =
     model || (provider === "anthropic" ? DEFAULT_ANTHROPIC_MODEL : DEFAULT_GEMINI_MODEL);
 
-  // --- Build conversation summary from history (exclude last message) ---
-  const conversationSummary = buildConversationSummary(messages.slice(0, -1));
-
-  // --- Determine execution mode ---
-
-  let plan: Plan;
-
+  // --- Simple mode: flat tool loop, no delegation ---
   if (mode === "simple") {
-    plan = { mode: "simple" };
-  } else if (mode === "team") {
-    yield { type: "agent_status" as LLMStreamEvent["type"], agent: "orchestrator", content: "Planerar uppgiften..." };
-    plan = await classifyTask(userMessage, conversationSummary, provider);
-    if (plan.mode === "simple") {
-      plan = {
-        mode: "team",
-        tasks: [{ agent: "db_researcher", task: userMessage }],
-      };
-    }
-  } else {
-    yield { type: "agent_status" as LLMStreamEvent["type"], agent: "orchestrator", content: "Analyserar uppgiften..." };
-    plan = await classifyTask(userMessage, conversationSummary, provider);
-  }
-
-  // --- Simple mode ---
-
-  if (plan.mode === "simple") {
     const { streamLLM } = await import("./llm-provider");
     yield* streamLLM(provider, messages, model, sessionId);
     return;
   }
 
-  // --- Team mode ---
-
-  console.log(
-    `[AgentTeam] Executing: ${plan.tasks!.map((t) => `${t.agent}("${t.task.slice(0, 50)}...")`).join(" → ")}`
-  );
-
-  let sharedContext = "";
+  // --- Auto/Team mode: lead agent with delegation ---
   const costs: CostAccumulator = { inputTokens: 0, outputTokens: 0 };
 
-  for (const task of plan.tasks!) {
-    const agentDef = AGENTS[task.agent];
+  // eventBuffer collects events from sub-agents during delegation
+  // (since we can't yield from inside executeDelegate's callback)
+  const eventBuffer: LLMStreamEvent[] = [];
 
-    yield {
-      type: "agent_status" as LLMStreamEvent["type"],
-      agent: agentDef.name,
-      content: `${agentDef.emoji} ${agentDef.label}: ${task.task}`,
-    };
+  const runner =
+    provider === "anthropic"
+      ? runLeadAgentAnthropic(messages, resolvedModel, sessionId, costs, eventBuffer)
+      : runLeadAgentGemini(messages, resolvedModel, sessionId, costs, eventBuffer);
 
-    const systemPrompt = buildAgentSystemPrompt(agentDef, sharedContext);
-    const tools = getToolsForAgent(agentDef, provider);
-
-    const fullTask = [
-      ...(conversationSummary
-        ? [`## Konversationshistorik`, conversationSummary, ``]
-        : []),
-      `## Användarens senaste meddelande`,
-      userMessage,
-      ``,
-      `## Din uppgift`,
-      task.task,
-    ].join("\n");
-
-    let agentOutput = "";
-
-    // Per-agent model override (e.g. Pro for doc_designer)
-    const agentModel =
-      (provider === "gemini" ? agentDef.modelOverride?.gemini : agentDef.modelOverride?.anthropic)
-      || resolvedModel;
-
-    // Determine if this agent uses Google Search grounding
-    const useGoogleSearch = provider === "gemini" && agentDef.geminiOverrides?.googleSearch;
-
-    const runner =
-      provider === "anthropic"
-        ? runAgentAnthropic(systemPrompt, fullTask, tools as Anthropic.Tool[], agentModel, sessionId, costs)
-        : runAgentGemini(systemPrompt, fullTask, tools, agentModel, sessionId, costs, {
-            googleSearch: useGoogleSearch,
-          });
-
-    for await (const event of runner) {
-      yield { ...event, agent: agentDef.name } as LLMStreamEvent;
-
-      if (event.type === "text_delta" && event.content) {
-        agentOutput += event.content;
-      }
+  for await (const event of runner) {
+    // First, flush any buffered events from sub-agents
+    while (eventBuffer.length > 0) {
+      yield eventBuffer.shift()!;
     }
-
-    sharedContext += `\n\n### ${agentDef.emoji} ${agentDef.label}:\n${agentOutput}`;
-
-    yield {
-      type: "agent_status" as LLMStreamEvent["type"],
-      agent: agentDef.name,
-      content: `${agentDef.emoji} ${agentDef.label} klar`,
-    };
+    yield event;
   }
 
-  yield {
-    type: "done",
-    cost: costs,
-  };
+  // Flush remaining buffered events
+  while (eventBuffer.length > 0) {
+    yield eventBuffer.shift()!;
+  }
+
+  yield { type: "done", cost: costs };
 }
