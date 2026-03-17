@@ -112,8 +112,14 @@ export class SessionManager {
           const ext = path.extname(att.filename) || "";
           const filePath = path.join(UPLOADS_DIR, `${att.id}${ext}`);
 
-          // Only include text-readable files inline
-          if (isTextFile(att.mimeType)) {
+          // Route by file type
+          if (att.mimeType === "application/pdf") {
+            // PDF: store as attachment marker — will be sent as native multimodal to LLM
+            fileParts.push(`<attachment type="pdf" id="${att.id}" filename="${att.filename}" />`);
+          } else if (att.mimeType.startsWith("image/")) {
+            // Image: store as attachment marker — will be sent as native vision input
+            fileParts.push(`<attachment type="image" id="${att.id}" filename="${att.filename}" mimeType="${att.mimeType}" />`);
+          } else if (isTextFile(att.mimeType)) {
             const fileContent = await readFile(filePath, "utf-8");
             const truncated = fileContent.length > 50000
               ? fileContent.slice(0, 50000) + "\n\n... (trunkerat)"

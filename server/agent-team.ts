@@ -16,6 +16,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { GoogleGenAI, type Content, type Part, type FunctionDeclaration } from "@google/genai";
 import { loadSkills, buildSkillContext, type Skill } from "./skill-loader";
+import { buildGeminiParts, buildAnthropicContent } from "./utils/multimodal";
 import {
   type LLMProvider,
   type LLMStreamEvent,
@@ -345,7 +346,8 @@ Komplexa uppgifter:
 
 ## Vad finns i våra databaser (db_researcher)
 
-Vi har MYCKET data internt — använd ALLTID db_researcher FÖRST. Använd web_researcher bara för saker som verkligen inte finns i våra databaser.
+Vi har data internt — använd db_researcher när frågan handlar om data som finns i våra databaser.
+Om användaren hänvisar till en SPECIFIK extern källa (PDF, URL, rapport), prioritera den källan — använd INTE db_researcher för att "komplettera" om det inte uttryckligen efterfrågas.
 
 ### fbg_analytics — Företagsdata
 - company_financials: bokslut per företag/år (omsättning, anställda, bransch, soliditet, rörelsemarginal) för alla företag i Falkenberg
@@ -397,9 +399,9 @@ doc_designer kan REDIGERA filer som redan skapats i sessionen. Om användaren be
 
 ## Regler
 
-- Använd ALLTID db_researcher för data som finns i våra databaser (fbg_analytics, naringslivsklimat, fbg_planning).
+- Använd db_researcher för data som finns i våra databaser (fbg_analytics, naringslivsklimat, fbg_planning).
 - Använd api_researcher för FÄRSK statistik från SCB eller andra API:er — speciellt data vi inte har i egna databaser.
-- Använd web_researcher BARA för nyheter, rapporter, kvalitativ info — INTE för statistik (api_researcher är bättre).
+- Använd web_researcher för nyheter, rapporter, kvalitativ info — INTE för statistik (api_researcher är bättre).
 - Jämförelser mellan kommuner → db_researcher (vi har 14 kommuner i naringslivsklimat!).
 - analyst behöver data — kör alltid researcher FÖRE analyst.
 - doc_designer och artifact_designer är ALDRIG i samma plan.
@@ -410,6 +412,8 @@ doc_designer kan REDIGERA filer som redan skapats i sessionen. Om användaren be
 - Vid redigeringsförfrågningar för artifacts (HTML): använd artifact_designer DIREKT. Meddelandet innehåller befintlig HTML i <existing-artifact>-taggar.
 - Om meddelandet börjar med [REDIGERA ARTIFACT] → kör ALLTID artifact_designer direkt, inga andra agenter behövs.
 - Varje task-beskrivning ska vara SPECIFIK. Vid redigering: ange exakt vad som ska ändras.
+- Om konversationshistoriken innehåller data (t.ex. från en PDF, URL eller tidigare agent), ÅTERANVÄND den — kör INTE samma sökningar igen.
+- Om användaren refererar till en extern källa (PDF, rapport, URL), basera arbetet på DEN källans innehåll — komplettera INTE med DB-data om det inte efterfrågas.
 
 Svara BARA med JSON.`;
 
@@ -423,15 +427,20 @@ interface Plan {
   tasks?: AgentTask[];
 }
 
-async function classifyTask(userMessage: string, provider: LLMProvider): Promise<Plan> {
+async function classifyTask(userMessage: string, conversationSummary: string, provider: LLMProvider): Promise<Plan> {
   try {
     let text: string;
+
+    // Build classifier input: conversation context + current message
+    const classifierInput = conversationSummary
+      ? `## Konversationshistorik (sammanfattning)\n${conversationSummary}\n\n## Senaste meddelande (detta ska besvaras)\n${userMessage}`
+      : userMessage;
 
     if (process.env.GEMINI_API_KEY) {
       const client = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
       const res = await client.models.generateContent({
         model: "gemini-3.1-flash-lite-preview",
-        contents: [{ role: "user", parts: [{ text: userMessage }] }],
+        contents: [{ role: "user", parts: [{ text: classifierInput }] }],
         config: { systemInstruction: CLASSIFY_PROMPT },
       });
       text = res.text || "";
@@ -441,7 +450,7 @@ async function classifyTask(userMessage: string, provider: LLMProvider): Promise
         model: DEFAULT_ANTHROPIC_MODEL,
         max_tokens: 512,
         system: CLASSIFY_PROMPT,
-        messages: [{ role: "user", content: userMessage }],
+        messages: [{ role: "user", content: classifierInput }],
       });
       text = (res.content.find((b) => b.type === "text") as Anthropic.TextBlock)?.text || "";
     }
@@ -537,7 +546,7 @@ async function* runAgentAnthropic(
 ): AsyncGenerator<LLMStreamEvent> {
   const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
-  let messages: Anthropic.MessageParam[] = [{ role: "user", content: task }];
+  let messages: Anthropic.MessageParam[] = [{ role: "user", content: buildAnthropicContent(task) }];
 
   // If no tools, do a single non-tool call
   const toolsParam = tools.length > 0 ? tools : undefined;
@@ -636,7 +645,7 @@ async function* runAgentGemini(
 ): AsyncGenerator<LLMStreamEvent> {
   const client = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
-  const contents: Content[] = [{ role: "user", parts: [{ text: task }] }];
+  const contents: Content[] = [{ role: "user", parts: buildGeminiParts(task) }];
 
   // Build tools config — function declarations + optional Google Search grounding
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -741,6 +750,41 @@ async function* runAgentGemini(
 // Main entry point
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Conversation summary builder
+// ---------------------------------------------------------------------------
+
+/**
+ * Build a concise summary of conversation history for agent context.
+ * Keeps recent messages in full and truncates older/long ones.
+ * This ensures agents know what has been discussed, fetched, and produced.
+ */
+function buildConversationSummary(messages: ChatMessage[]): string {
+  if (messages.length === 0) return "";
+
+  const MAX_TOTAL_CHARS = 12000;
+  const MAX_PER_MESSAGE = 3000;
+  const parts: string[] = [];
+  let totalChars = 0;
+
+  // Process from newest to oldest, then reverse
+  for (let i = messages.length - 1; i >= 0 && totalChars < MAX_TOTAL_CHARS; i--) {
+    const msg = messages[i];
+    const role = msg.role === "user" ? "Användaren" : "Assistenten";
+    let content = msg.content;
+
+    if (content.length > MAX_PER_MESSAGE) {
+      content = content.slice(0, MAX_PER_MESSAGE) + "\n[...trunkerat...]";
+    }
+
+    const entry = `**${role}:** ${content}`;
+    parts.unshift(entry);
+    totalChars += entry.length;
+  }
+
+  return parts.join("\n\n");
+}
+
 export type AgentTeamMode = "auto" | "team" | "simple";
 
 export async function* streamAgentTeam(
@@ -754,6 +798,9 @@ export async function* streamAgentTeam(
   const resolvedModel =
     model || (provider === "anthropic" ? DEFAULT_ANTHROPIC_MODEL : DEFAULT_GEMINI_MODEL);
 
+  // --- Build conversation summary from history (exclude last message) ---
+  const conversationSummary = buildConversationSummary(messages.slice(0, -1));
+
   // --- Determine execution mode ---
 
   let plan: Plan;
@@ -762,7 +809,7 @@ export async function* streamAgentTeam(
     plan = { mode: "simple" };
   } else if (mode === "team") {
     yield { type: "agent_status" as LLMStreamEvent["type"], agent: "orchestrator", content: "Planerar uppgiften..." };
-    plan = await classifyTask(userMessage, provider);
+    plan = await classifyTask(userMessage, conversationSummary, provider);
     if (plan.mode === "simple") {
       plan = {
         mode: "team",
@@ -771,7 +818,7 @@ export async function* streamAgentTeam(
     }
   } else {
     yield { type: "agent_status" as LLMStreamEvent["type"], agent: "orchestrator", content: "Analyserar uppgiften..." };
-    plan = await classifyTask(userMessage, provider);
+    plan = await classifyTask(userMessage, conversationSummary, provider);
   }
 
   // --- Simple mode ---
@@ -804,7 +851,10 @@ export async function* streamAgentTeam(
     const tools = getToolsForAgent(agentDef, provider);
 
     const fullTask = [
-      `## Användarens fråga`,
+      ...(conversationSummary
+        ? [`## Konversationshistorik`, conversationSummary, ``]
+        : []),
+      `## Användarens senaste meddelande`,
       userMessage,
       ``,
       `## Din uppgift`,

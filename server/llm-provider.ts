@@ -1,6 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { GoogleGenAI, type Content, type Part } from "@google/genai";
 import { loadSkills, buildSkillContext, type Skill } from "./skill-loader";
+import { buildGeminiParts, buildAnthropicContent } from "./utils/multimodal";
 import {
   queryDatabase,
   queryDatabaseToolDefinition,
@@ -203,7 +204,7 @@ export async function* streamAnthropic(
 
   let anthropicMessages: Anthropic.MessageParam[] = messages.map((m) => ({
     role: m.role,
-    content: m.content,
+    content: buildAnthropicContent(m.content),
   }));
 
   yield { type: "thinking" };
@@ -321,7 +322,7 @@ export async function* streamGemini(
 
   const contents: Content[] = messages.map((m) => ({
     role: m.role === "assistant" ? "model" : "user",
-    parts: [{ text: m.content }] as Part[],
+    parts: buildGeminiParts(m.content),
   }));
 
   const tools = [{ functionDeclarations: GEMINI_FUNCTION_DECLARATIONS }];
