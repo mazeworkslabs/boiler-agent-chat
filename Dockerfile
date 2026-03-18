@@ -1,9 +1,7 @@
-FROM node:20-alpine AS base
-RUN apk add --no-cache curl python3 py3-pip \
-    chromium nss freetype harfbuzz ca-certificates ttf-freefont
-# Tell Playwright to use system Chromium instead of downloading its own
-ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
-ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium-browser
+FROM node:20-bookworm-slim AS base
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl python3 python3-pip ca-certificates fonts-freefont-ttf && \
+    rm -rf /var/lib/apt/lists/*
 # Install uv for Python sandbox
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh && mv /root/.local/bin/uv /usr/local/bin/uv
 # Install pnpm
@@ -48,6 +46,9 @@ COPY --from=builder /app/.agents/skills ./.agents/skills
 # tsx for running TypeScript server in production
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/package.json ./
+
+# Install Playwright's bundled Chromium + system deps (must run as root before USER switch)
+RUN npx playwright install --with-deps chromium
 
 # Writable dirs
 RUN mkdir -p /app/uploads /tmp/chat-app-sandbox && \

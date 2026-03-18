@@ -79,13 +79,7 @@ async function tryPlaywright(
 
     const browser = await pw.chromium.launch({
       headless: true,
-      executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || undefined,
-      args: [
-        "--disable-gpu",
-        "--disable-software-rasterizer",
-        "--disable-dev-shm-usage",
-        "--no-sandbox",
-      ],
+      args: ["--disable-dev-shm-usage", "--no-sandbox"],
     });
     const page = await browser.newPage();
 
