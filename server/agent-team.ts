@@ -727,30 +727,6 @@ function summarizeHandoffForStatus(handoff: HandoffSpec): string {
 }
 
 
-function getMissingAttachmentMessage(
-  userMessage: string,
-  sessionState: SessionState
-): string | null {
-  if (sessionState.attachments.length > 0) {
-    return null;
-  }
-
-  const normalized = userMessage.toLowerCase();
-  const referencesSpecificSource =
-    /(bifogad|bilagd|uppladdad|medskickad|attached|attachment|pdf|rapporten|rapport\b|underlaget|dokumentet)/i.test(normalized)
-    || (
-      /(denna|den här|den har)/i.test(normalized)
-      && /(pdf|rapport|underlag|dokument)/i.test(normalized)
-    );
-  const asksToUseSource =
-    /(analysera|analys|läs|las|sammanfatta|utgå från|utga fran|basera|relatera|jämför|jamfor|kolla|checka|gå igenom|bearbeta|skapa|gör|gor)/i.test(normalized);
-
-  if (!referencesSpecificSource || !asksToUseSource) {
-    return null;
-  }
-
-  return "Du hänvisar till en specifik fil eller rapport, men jag ser ingen bifogad fil i den här chatten ännu. Bifoga filen så hjälper jag dig direkt.";
-}
 
 // ---------------------------------------------------------------------------
 // Execute delegate — runs a specialist sub-agent and collects results
@@ -1497,14 +1473,6 @@ export async function* streamAgentTeam(
     recentDelegateResults: [],
     timelineTurns: [],
   };
-  const rawUserMessage = messages[messages.length - 1]?.content || "";
-  const missingAttachmentMessage = getMissingAttachmentMessage(rawUserMessage, resolvedState);
-  if (missingAttachmentMessage) {
-    yield { type: "text_delta", content: missingAttachmentMessage };
-    yield { type: "done", cost: costs };
-    return;
-  }
-
   const runner =
     provider === "anthropic"
       ? runLeadAgentAnthropic(messages, resolvedModel, sessionId, costs, resolvedState, mode)
