@@ -152,6 +152,9 @@ export interface ToolResult {
   files?: Array<{ id: string; filename: string; mimeType: string; sizeBytes: number }>;
   /** Base64-encoded screenshot image (from browse_web) — injected into tool response so LLM can see it */
   screenshotBase64?: string;
+  /** Base64-encoded file (from web_fetch PDF download) — injected so LLM can read it natively */
+  fileBase64?: string;
+  fileMimeType?: string;
 }
 
 export async function executeTool(
@@ -225,6 +228,8 @@ export async function executeTool(
           namedOutputs: hasFiles
             ? createNamedOutputsForResources({ sourcePrefix: name, createdAt, files: result.files })
             : undefined,
+          fileBase64: result.fileBase64,
+          fileMimeType: result.fileMimeType,
         };
       }
       case "web_search": {
@@ -370,7 +375,7 @@ export async function* streamAnthropic(
       };
 
       // For Anthropic, tool_result content can be an array with text + image
-      const toolContent: Array<Anthropic.TextBlockParam | Anthropic.ImageBlockParam> = [
+      const toolContent: Array<Anthropic.TextBlockParam | Anthropic.ImageBlockParam | Anthropic.DocumentBlockParam> = [
         {
           type: "text",
           text: buildStructuredResultPayload({
@@ -393,6 +398,22 @@ export async function* streamAnthropic(
           type: "image",
           source: { type: "base64", media_type: "image/png", data: toolResult.screenshotBase64 },
         });
+      }
+
+      // Include downloaded file (PDF/image) so Claude can read it natively
+      if (toolResult.fileBase64 && toolResult.fileMimeType) {
+        const mt = toolResult.fileMimeType;
+        if (mt.startsWith("image/")) {
+          toolContent.push({
+            type: "image",
+            source: { type: "base64", media_type: mt as "image/png", data: toolResult.fileBase64 },
+          });
+        } else if (mt === "application/pdf") {
+          toolContent.push({
+            type: "document",
+            source: { type: "base64", media_type: "application/pdf", data: toolResult.fileBase64 },
+          } as Anthropic.DocumentBlockParam);
+        }
       }
 
       toolResults.push({
@@ -562,6 +583,13 @@ export async function* streamGemini(
       if (toolResult.screenshotBase64) {
         functionResponses.push({
           inlineData: { mimeType: "image/png", data: toolResult.screenshotBase64 },
+        } as Part);
+      }
+
+      // Include downloaded file (PDF/image) so Gemini can read it natively
+      if (toolResult.fileBase64 && toolResult.fileMimeType) {
+        functionResponses.push({
+          inlineData: { mimeType: toolResult.fileMimeType, data: toolResult.fileBase64 },
         } as Part);
       }
     }

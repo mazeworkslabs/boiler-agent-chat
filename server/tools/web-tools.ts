@@ -100,6 +100,11 @@ function guessMimeType(filename: string, contentType: string): string {
   }
 }
 
+// Gemini-readable types that can be included as inlineData
+const GEMINI_READABLE_TYPES = ["application/pdf", "image/png", "image/jpeg", "image/webp", "image/gif"];
+// Max size for including base64 in tool response (10MB)
+const MAX_INLINE_SIZE = 10 * 1024 * 1024;
+
 export async function executeWebFetch(
   input: Record<string, unknown>,
   sessionId?: string
@@ -107,6 +112,9 @@ export async function executeWebFetch(
   success: boolean;
   result: string;
   files?: Array<{ id: string; filename: string; mimeType: string; sizeBytes: number }>;
+  /** Base64-encoded file data for Gemini-readable types (PDF, images) */
+  fileBase64?: string;
+  fileMimeType?: string;
 }> {
   const url = input.url as string;
   const extractText = input.extract_text !== false; // default true
@@ -153,10 +161,15 @@ export async function executeWebFetch(
 
       const fileInfo = { id: fileId, filename, mimeType, sizeBytes: fileStat.size };
 
+      // Include base64 for Gemini-readable types so LLM can read the content natively
+      const canInline = GEMINI_READABLE_TYPES.includes(mimeType) && buffer.length <= MAX_INLINE_SIZE;
+
       return {
         success: true,
         result: `Filen "${filename}" (${(fileStat.size / 1024).toFixed(1)} KB, ${mimeType}) laddades ned från ${url}`,
         files: [fileInfo],
+        fileBase64: canInline ? buffer.toString("base64") : undefined,
+        fileMimeType: canInline ? mimeType : undefined,
       };
     }
 

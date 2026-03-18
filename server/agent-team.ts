@@ -938,7 +938,7 @@ async function* runSubAgentAnthropic(
         resultKind: "tool",
       };
 
-      const toolContent: Array<Anthropic.TextBlockParam | Anthropic.ImageBlockParam> = [
+      const toolContent: Array<Anthropic.TextBlockParam | Anthropic.ImageBlockParam | Anthropic.DocumentBlockParam> = [
         {
           type: "text",
           text: buildStructuredResultPayload({
@@ -960,6 +960,13 @@ async function* runSubAgentAnthropic(
           type: "image",
           source: { type: "base64", media_type: "image/png", data: result.screenshotBase64 },
         });
+      }
+      if (result.fileBase64 && result.fileMimeType) {
+        if (result.fileMimeType.startsWith("image/")) {
+          toolContent.push({ type: "image", source: { type: "base64", media_type: result.fileMimeType as "image/png", data: result.fileBase64 } });
+        } else if (result.fileMimeType === "application/pdf") {
+          toolContent.push({ type: "document", source: { type: "base64", media_type: "application/pdf", data: result.fileBase64 } } as Anthropic.DocumentBlockParam);
+        }
       }
 
       toolResults.push({
@@ -1088,6 +1095,11 @@ async function* runSubAgentGemini(
       if (result.screenshotBase64) {
         functionResponses.push({
           inlineData: { mimeType: "image/png", data: result.screenshotBase64 },
+        } as Part);
+      }
+      if (result.fileBase64 && result.fileMimeType) {
+        functionResponses.push({
+          inlineData: { mimeType: result.fileMimeType, data: result.fileBase64 },
         } as Part);
       }
     }
@@ -1264,6 +1276,11 @@ async function* runLeadAgentGemini(
           inlineData: { mimeType: "image/png", data: result.screenshotBase64 },
         } as Part);
       }
+      if (result.fileBase64 && result.fileMimeType) {
+        functionResponses.push({
+          inlineData: { mimeType: result.fileMimeType, data: result.fileBase64 },
+        } as Part);
+      }
     }
 
     contents.push({ role: "user", parts: functionResponses });
@@ -1394,7 +1411,7 @@ async function* runLeadAgentAnthropic(
         files: result.files,
       });
 
-      const toolContent: Array<Anthropic.TextBlockParam | Anthropic.ImageBlockParam> = [
+      const toolContent: Array<Anthropic.TextBlockParam | Anthropic.ImageBlockParam | Anthropic.DocumentBlockParam> = [
         {
           type: "text",
           text: buildStructuredResultPayload({
@@ -1417,6 +1434,13 @@ async function* runLeadAgentAnthropic(
           type: "image",
           source: { type: "base64", media_type: "image/png", data: result.screenshotBase64 },
         });
+      }
+      if (result.fileBase64 && result.fileMimeType) {
+        if (result.fileMimeType.startsWith("image/")) {
+          toolContent.push({ type: "image", source: { type: "base64", media_type: result.fileMimeType as "image/png", data: result.fileBase64 } });
+        } else if (result.fileMimeType === "application/pdf") {
+          toolContent.push({ type: "document", source: { type: "base64", media_type: "application/pdf", data: result.fileBase64 } } as Anthropic.DocumentBlockParam);
+        }
       }
 
       toolResults.push({
