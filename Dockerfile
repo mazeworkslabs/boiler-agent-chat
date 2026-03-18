@@ -47,8 +47,10 @@ COPY --from=builder /app/.agents/skills ./.agents/skills
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/package.json ./
 
-# Install Playwright's bundled Chromium + system deps (must run as root before USER switch)
-RUN npx playwright install --with-deps chromium
+# Install Playwright's bundled Chromium + system deps to a shared path accessible by nextjs user
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+RUN npx playwright install --with-deps chromium && \
+    chmod -R o+rx /ms-playwright
 
 # Writable dirs
 RUN mkdir -p /app/uploads /tmp/chat-app-sandbox && \
