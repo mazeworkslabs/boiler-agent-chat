@@ -51,7 +51,7 @@ import {
   browseWebToolDefinition,
   browseWebGeminiTool,
 } from "./tools/browse-web";
-import { getSchemaContext } from "./db/schema-cache";
+import { getSchemaContext, getSchemaSummary } from "./db/schema-cache";
 import path from "path";
 import {
   applyExecutionToSessionState,
@@ -479,7 +479,7 @@ function buildLeadAgentPrompt(
 ): string {
   const skills = getSkills();
   const skillSummary = buildSkillSummary(skills, SKILL_AGENT_MAP);
-  const schemaContext = getSchemaContext();
+  const schemaSummary = getSchemaSummary();
   const sessionStateContext = sessionState ? buildSessionStateContext(sessionState) : "";
   const modeGuidance =
     options?.mode === "team"
@@ -542,12 +542,13 @@ Om användaren laddar upp en fil syns den som <attachment type="pdf" .../> i med
 - Specialister du delegerar till KAN OCKSÅ läsa den
 - SÖK INTE på webben efter innehåll som redan finns i en bifogad fil!
 
-## Våra databaser
+## Våra databaser (översikt — db_researcher har fullständigt schema)
 
-${schemaContext}
+${schemaSummary}
 
 Falkenbergs kommun-id: '1382'
 naringslivsklimat har 14 kustkommuner: Falkenberg, Göteborg, Kungsbacka, Varberg, Halmstad, Laholm, Båstad, Ängelholm, Höganäs, Helsingborg, Landskrona, Kävlinge, Lomma, Malmö
+Vid komplexa databas-frågor: delegera till db_researcher som har kolumn-detaljer och kan skriva exakt SQL.
 
 ## KRITISKT: HTML och artifacts
 

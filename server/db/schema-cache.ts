@@ -22,9 +22,11 @@ const DB_URLS: Record<string, string | undefined> = {
 };
 
 let cachedSchema = "";
+let cachedSchemaSummary = "";
 
 export async function initSchemaCache(): Promise<void> {
   const parts: string[] = [];
+  const summaryParts: string[] = [];
 
   for (const [dbName, url] of Object.entries(DB_URLS)) {
     if (!url) {
@@ -60,8 +62,10 @@ export async function initSchemaCache(): Promise<void> {
       }
 
       parts.push(`### ${dbName}`);
+      const tableNames: string[] = [];
       for (const [tableName, cols] of tables) {
         const count = countMap.get(tableName) ?? 0;
+        tableNames.push(`${tableName} (~${count} rader)`);
         parts.push(`**${tableName}** (~${count} rader)`);
         for (const col of cols) {
           const nullable = col.is_nullable === "YES" ? ", nullable" : "";
@@ -69,6 +73,7 @@ export async function initSchemaCache(): Promise<void> {
         }
       }
       parts.push("");
+      summaryParts.push(`- **${dbName}**: ${tableNames.join(", ")}`);
 
       await sql.end();
       console.log(`[SchemaCache] Loaded ${tables.size} tables from ${dbName}`);
@@ -80,9 +85,16 @@ export async function initSchemaCache(): Promise<void> {
   }
 
   cachedSchema = parts.join("\n");
-  console.log(`[SchemaCache] Ready (${cachedSchema.length} chars)`);
+  cachedSchemaSummary = summaryParts.join("\n");
+  console.log(`[SchemaCache] Ready (${cachedSchema.length} chars, summary ${cachedSchemaSummary.length} chars)`);
 }
 
+/** Full schema with all columns — for db_researcher */
 export function getSchemaContext(): string {
   return cachedSchema || "(Schema ej laddat — kör information_schema-queries manuellt)";
+}
+
+/** Compact summary (table names + row counts only) — for lead agent */
+export function getSchemaSummary(): string {
+  return cachedSchemaSummary || "(Schema ej laddat)";
 }
