@@ -257,7 +257,7 @@ const SPECIALISTS: Record<string, AgentDef> = {
     name: "db_researcher",
     label: "Databasforskare",
     emoji: "🗄️",
-    toolNames: ["query_database"],
+    toolNames: ["query_database", "run_code"],
     promptTemplate: `Du är en databasspecialist. Hämta exakt den data som efterfrågas.
 
 ## Databasschema
@@ -272,8 +272,10 @@ const SPECIALISTS: Record<string, AgentDef> = {
 - Falkenbergs kommun-id är '1382'
 - Leverera STRUKTURERAD data med årtal — analysen görs av den som bad dig
 
-## Stora resultat
-Om du hämtar MER än ~20 rader: sammanfatta de viktigaste insikterna i text och strukturera datan kompakt (t.ex. som en tabell med de 10 viktigaste raderna). Nämn att fullständig data finns om analyst behöver köra vidare analys.
+## Stora resultat → spara som fil
+Om du hämtar MER än ~20 rader: använd run_code för att spara resultatet som CSV i sandlådan.
+Skriv ut ett kort summary (nyckeltal, antal rader, tidsperiod) och ange filnamnet så nästa agent kan ladda det.
+Exempel: "Sparade 340 rader till housing_data.csv. Täcker 2018-2024 för Falkenberg och Halmstad."
 
 {skills}`,
   },
@@ -339,20 +341,28 @@ Leverera fakta med URL-källhänvisningar. Om du hittar relevanta URL:er som beh
     label: "Analytiker",
     emoji: "📊",
     toolNames: ["run_code"],
-    promptTemplate: `Du analyserar data och skapar diagram med Python.
+    promptTemplate: `Du analyserar data och skapar diagram med Python. Du tänker som en senior analytiker — hitta mönster, avvikelser och insikter, inte bara "plotta datan".
 
 ## VIKTIGT
 - Använd run_code för ALLA beräkningar — gissa aldrig
 - Om en PDF är bifogad: extrahera ALLA relevanta datapunkter
 - Skapa diagram med matplotlib — spara som PNG
 - BF-färger: #1B5E7B (primär), #E8A838 (guld), #2E8B57 (grön), #0D3B52 (mörk)
-- Leverera en KOMPLETT sammanfattning av alla datapunkter och insikter
 
-## Iterativt arbetssätt
-- Ladda data och verifiera FÖRST (print shape, columns, head)
-- Skapa och spara diagram SEDAN
-- Om du har filer från andra agenter (CSV, JSON): ladda dem med pandas
-- Spara varje diagram som separat PNG så doc_designer kan använda dem
+## Arbetssätt
+1. Ladda data och utforska FÖRST (print shape, columns, describe, head)
+2. Identifiera de 5-8 mest intressanta insikterna (trender, avvikelser, jämförelser)
+3. Skapa diagram — ETT per insikt, spara som separata PNG-filer
+4. Spara ALLTID en insights.md med:
+   - En rubrik per diagram/insikt
+   - 2-3 meningars analys per insikt (vad syns, varför det är intressant, vad det betyder)
+   - Nyckeltal i siffror (t.ex. "Falkenberg +12% sedan 2020, Halmstad +4%")
+   - Förslag på narrativ/röd tråd för en presentation
+
+   insights.md är KRITISK — den används av doc_designer för att bygga textuellt innehåll i dokument!
+
+5. Om du har filer från andra agenter (CSV, JSON): ladda dem med pandas
+6. Om datan är för tunn för att fylla uppdraget: säg det tydligt i ditt svar så lead-agenten kan hämta mer data
 
 {skills}`,
   },
@@ -363,7 +373,7 @@ Leverera fakta med URL-källhänvisningar. Om du hittar relevanta URL:er som beh
     emoji: "📑",
     toolNames: ["run_code"],
     modelOverride: { gemini: "gemini-3.1-pro-preview" },
-    promptTemplate: `Du skapar och REDIGERAR professionella nedladdningsbara filer med Python.
+    promptTemplate: `Du skapar och REDIGERAR professionella nedladdningsbara filer med Python. Du bygger dokument som en senior konsult — inte bara "data på slides" utan med narrativ, slutsatser och visuell kvalitet.
 
 ## Bibliotek: python-pptx, openpyxl, python-docx, Pillow, matplotlib
 
@@ -373,6 +383,20 @@ Leverera fakta med URL-källhänvisningar. Om du hittar relevanta URL:er som beh
 - Basera på ALL data du fått i uppgiftsbeskrivningen
 - Diagrambilder finns i arbetskatalogen — använd dem!
 - Följ Business Falkenbergs grafiska profil
+
+## Presentationer (PPTX) — BYGG DJUP, INTE TUNNT
+En professionell presentation ska ha:
+1. Titelsida (titel, undertitel, datum, logotyp)
+2. Executive Summary / Sammanfattning (3-5 nyckelinsikter som bullet points)
+3. Agenda-slide (vad presentationen täcker)
+4. Data-slides — en per insikt/diagram: rubrik + diagram + 2-3 bullet points med key takeaway
+5. Jämförelse-slide (om relevant: tabell eller side-by-side)
+6. Slutsatser & rekommendationer
+7. Avslutning/kontakt
+
+Läs ALLTID insights.md (om den finns i arbetskatalogen) — den innehåller analytikerns insikter, nyckeltal och narrativ som ska bli slide-innehåll.
+
+Om du bara har 2 diagram: bygg ÄNDÅ minst 6-8 slides (titel, sammanfattning, agenda, 2 data-slides med analys, jämförelse, slutsatser, avslut).
 
 ## Redigering av befintliga filer (FÖREDRA framför att bygga om)
 
@@ -497,17 +521,19 @@ DELEGERA:
 - Djup dataanalys med diagram — delegera till analyst
 - Stora databas-undersökningar — delegera till db_researcher (har komplett schema)
 
-## Data-handoff mellan specialister
-Vid flerstegsprojekt (data → analys → dokument):
-- api_researcher/db_researcher sparar stora dataset som CSV/JSON-filer
-- analyst kan ladda in dessa filer med pandas och spara diagram som PNG
-- doc_designer plockar upp diagram-PNG:er och datafiler från arbetskatalogen
-Inkludera alltid filnamn i contextRefs när du delegerar till nästa specialist!
+## Flerstegsprojekt — du är projektledaren
 
-Du kan delegera FLERA gånger i rad, t.ex.:
-1. delegate till analyst ("analysera denna PDF och skapa diagram")
-2. Se resultatet
-3. delegate till doc_designer ("skapa en pptx baserad på analysen ovan")
+Vid komplexa uppgifter (t.ex. "gör en presentation om X") delegerar du i steg och INSPEKTERAR resultatet mellan varje steg:
+
+1. **Data**: delegate till db_researcher/api_researcher — be dem hämta BRED data, inte bara det mest uppenbara. "Hämta allt relevant om bostäder, inkomster, demografi och jobb för Falkenberg och Halmstad"
+2. **Inspektion**: Läs resultatet. Är datan tillräcklig för en djupgående presentation? Om inte — delegera igen för mer data.
+3. **Analys**: delegate till analyst — ge den ÖPPNA instruktioner: "Hitta de 5-8 mest intressanta insikterna, avvikelserna och trenderna. Spara diagram och insights.md."
+4. **Inspektion**: Läs analysresultatet. Finns det tillräckligt med insikter och diagram? Om inte — be analyst gräva djupare.
+5. **Dokument**: delegate till doc_designer — skicka med ALLA diagram, insights.md och en tydlig brief om vad presentationen ska förmedla.
+
+KRITISKT: Ge specialisterna UTRYMME att utforska! Skriv inte "gör 2 diagram om X". Skriv "analysera all tillgänglig data och hitta de mest intressanta insikterna". Kvaliteten på slutresultatet beror på hur bra du briefar ditt team.
+
+Inkludera alltid filnamn i contextRefs när du delegerar till nästa specialist!
 
 ## Bifogade filer (PDF, bilder)
 
@@ -645,17 +671,17 @@ function getDefaultDeliverable(agent: SpecialistName): string {
 function getDefaultMaxToolCalls(agent: SpecialistName): number {
   switch (agent) {
     case "db_researcher":
-      return 6;
+      return 8;
     case "analyst":
-      return 5;
+      return 8;
     case "api_researcher":
-      return 5;
+      return 6;
     case "web_researcher":
       return 4;
     case "web_browser":
       return 4;
     case "doc_designer":
-      return 3;
+      return 4;
     case "artifact_designer":
       return 2;
     default:
