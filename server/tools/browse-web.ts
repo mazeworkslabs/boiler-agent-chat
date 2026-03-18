@@ -50,8 +50,11 @@ export const browseWebGeminiTool: FunctionDeclaration = {
   },
 };
 
-// Track whether Playwright is available (lazy-detected on first use)
+// Track whether Playwright+browser is working (lazy-detected on first use)
 let playwrightAvailable: boolean | null = null;
+// Track consecutive browser crashes to avoid infinite retries
+let consecutiveBrowserFailures = 0;
+const MAX_BROWSER_FAILURES = 3;
 
 interface BrowseResult {
   text: string;
@@ -64,6 +67,11 @@ async function tryPlaywright(
   sessionId?: string
 ): Promise<BrowseResult | null> {
   if (playwrightAvailable === false) return null;
+  if (consecutiveBrowserFailures >= MAX_BROWSER_FAILURES) {
+    console.log("[BrowseWeb] Too many browser crashes, falling back to fetch");
+    playwrightAvailable = false;
+    return null;
+  }
 
   try {
     const pw = await import("playwright");
@@ -72,6 +80,12 @@ async function tryPlaywright(
     const browser = await pw.chromium.launch({
       headless: true,
       executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || undefined,
+      args: [
+        "--disable-gpu",
+        "--disable-software-rasterizer",
+        "--disable-dev-shm-usage",
+        "--no-sandbox",
+      ],
     });
     const page = await browser.newPage();
 
@@ -118,14 +132,20 @@ async function tryPlaywright(
     await page.close();
     await browser.close();
 
+    consecutiveBrowserFailures = 0; // Reset on success
     return { text, screenshotFile };
   } catch (err) {
+    const msg = (err as Error).message || "";
     if (playwrightAvailable === null) {
       playwrightAvailable = false;
       console.log("[BrowseWeb] Playwright not available, using fetch fallback");
+    } else if (msg.includes("browser has been closed") || msg.includes("Browser closed") || msg.includes("crashed")) {
+      // Browser crashed — count towards fallback threshold
+      consecutiveBrowserFailures++;
+      console.error(`[BrowseWeb] Browser crash (${consecutiveBrowserFailures}/${MAX_BROWSER_FAILURES}):`, msg);
     } else {
-      // Playwright is available but this specific page failed
-      console.error("[BrowseWeb] Playwright error:", (err as Error).message);
+      // Page-specific error (timeout, navigation etc.) — don't count as browser crash
+      console.error("[BrowseWeb] Playwright error:", msg);
     }
     return null;
   }
