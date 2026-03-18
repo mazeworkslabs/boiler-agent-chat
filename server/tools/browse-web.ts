@@ -59,6 +59,7 @@ const MAX_BROWSER_FAILURES = 3;
 interface BrowseResult {
   text: string;
   screenshotFile?: { id: string; filename: string; mimeType: string; sizeBytes: number };
+  screenshotBase64?: string;
 }
 
 async function tryPlaywright(
@@ -96,6 +97,7 @@ async function tryPlaywright(
     });
 
     let screenshotFile: BrowseResult["screenshotFile"];
+    let buffer: Buffer | undefined;
 
     if (options.screenshot) {
       await mkdir(UPLOADS_DIR, { recursive: true });
@@ -104,7 +106,7 @@ async function tryPlaywright(
       const filename = `screenshot_${hostname}.png`;
       const destPath = path.join(UPLOADS_DIR, `${fileId}.png`);
 
-      const buffer = await page.screenshot({ fullPage: false });
+      buffer = Buffer.from(await page.screenshot({ fullPage: false }));
       await writeFile(destPath, buffer);
 
       const fileStat = await stat(destPath);
@@ -123,11 +125,14 @@ async function tryPlaywright(
       screenshotFile = { id: fileId, filename, mimeType: "image/png", sizeBytes: fileStat.size };
     }
 
+    // Keep buffer for base64 encoding before closing
+    const screenshotBase64 = options.screenshot && buffer ? Buffer.from(buffer).toString("base64") : undefined;
+
     await page.close();
     await browser.close();
 
     consecutiveBrowserFailures = 0; // Reset on success
-    return { text, screenshotFile };
+    return { text, screenshotFile, screenshotBase64 };
   } catch (err) {
     const msg = (err as Error).message || "";
     if (playwrightAvailable === null) {
@@ -183,6 +188,7 @@ export async function executeBrowseWeb(
   success: boolean;
   result: string;
   files?: Array<{ id: string; filename: string; mimeType: string; sizeBytes: number }>;
+  screenshotBase64?: string;
 }> {
   const url = input.url as string;
   const screenshot = input.screenshot as boolean | undefined;
@@ -207,6 +213,7 @@ export async function executeBrowseWeb(
         success: true,
         result,
         files: pwResult.screenshotFile ? [pwResult.screenshotFile] : undefined,
+        screenshotBase64: pwResult.screenshotBase64,
       };
     }
 

@@ -938,20 +938,34 @@ async function* runSubAgentAnthropic(
         resultKind: "tool",
       };
 
+      const toolContent: Array<Anthropic.TextBlockParam | Anthropic.ImageBlockParam> = [
+        {
+          type: "text",
+          text: buildStructuredResultPayload({
+            type: "tool",
+            name: toolBlock.name,
+            success: result.success,
+            summary: result.summary || result.result.slice(0, 200),
+            details: result.result,
+            namedOutputs: result.namedOutputs,
+            facts: result.facts,
+            artifact: result.artifact,
+            files: result.files,
+          }),
+        },
+      ];
+
+      if (result.screenshotBase64) {
+        toolContent.push({
+          type: "image",
+          source: { type: "base64", media_type: "image/png", data: result.screenshotBase64 },
+        });
+      }
+
       toolResults.push({
         type: "tool_result",
         tool_use_id: toolBlock.id,
-        content: buildStructuredResultPayload({
-          type: "tool",
-          name: toolBlock.name,
-          success: result.success,
-          summary: result.summary || result.result.slice(0, 200),
-          details: result.result,
-          namedOutputs: result.namedOutputs,
-          facts: result.facts,
-          artifact: result.artifact,
-          files: result.files,
-        }),
+        content: toolContent,
       });
     }
 
@@ -1069,6 +1083,13 @@ async function* runSubAgentGemini(
           },
         },
       });
+
+      // Include screenshot image so the sub-agent can see the page
+      if (result.screenshotBase64) {
+        functionResponses.push({
+          inlineData: { mimeType: "image/png", data: result.screenshotBase64 },
+        } as Part);
+      }
     }
 
     contents.push({ role: "user", parts: functionResponses });
@@ -1236,6 +1257,13 @@ async function* runLeadAgentGemini(
           },
         },
       });
+
+      // Include screenshot image so lead agent can see the page
+      if (result.screenshotBase64) {
+        functionResponses.push({
+          inlineData: { mimeType: "image/png", data: result.screenshotBase64 },
+        } as Part);
+      }
     }
 
     contents.push({ role: "user", parts: functionResponses });
@@ -1366,21 +1394,35 @@ async function* runLeadAgentAnthropic(
         files: result.files,
       });
 
+      const toolContent: Array<Anthropic.TextBlockParam | Anthropic.ImageBlockParam> = [
+        {
+          type: "text",
+          text: buildStructuredResultPayload({
+            type: toolBlock.name === "delegate" ? "delegate" : "tool",
+            name: toolBlock.name,
+            success: result.success,
+            agent: toolBlock.name === "delegate" ? ((toolBlock.input as { agent: string }).agent) : undefined,
+            summary,
+            details: result.result,
+            namedOutputs: result.namedOutputs,
+            facts: result.facts,
+            artifact: result.artifact,
+            files: result.files,
+          }),
+        },
+      ];
+
+      if (result.screenshotBase64) {
+        toolContent.push({
+          type: "image",
+          source: { type: "base64", media_type: "image/png", data: result.screenshotBase64 },
+        });
+      }
+
       toolResults.push({
         type: "tool_result",
         tool_use_id: toolBlock.id,
-        content: buildStructuredResultPayload({
-          type: toolBlock.name === "delegate" ? "delegate" : "tool",
-          name: toolBlock.name,
-          success: result.success,
-          agent: toolBlock.name === "delegate" ? ((toolBlock.input as { agent: string }).agent) : undefined,
-          summary,
-          details: result.result,
-          namedOutputs: result.namedOutputs,
-          facts: result.facts,
-          artifact: result.artifact,
-          files: result.files,
-        }),
+        content: toolContent,
       });
     }
 

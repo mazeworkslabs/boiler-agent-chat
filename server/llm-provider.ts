@@ -150,6 +150,8 @@ export interface ToolResult {
   facts?: string[];
   artifact?: { id: string; title: string; type: string; content: string };
   files?: Array<{ id: string; filename: string; mimeType: string; sizeBytes: number }>;
+  /** Base64-encoded screenshot image (from browse_web) — injected into tool response so LLM can see it */
+  screenshotBase64?: string;
 }
 
 export async function executeTool(
@@ -238,6 +240,7 @@ export async function executeTool(
             createdAt,
             files: result.files,
           }),
+          screenshotBase64: result.screenshotBase64,
         };
       }
       default:
@@ -358,20 +361,36 @@ export async function* streamAnthropic(
         resultKind: "tool",
       };
 
+      // For Anthropic, tool_result content can be an array with text + image
+      const toolContent: Array<Anthropic.TextBlockParam | Anthropic.ImageBlockParam> = [
+        {
+          type: "text",
+          text: buildStructuredResultPayload({
+            type: "tool",
+            name: toolBlock.name,
+            success: toolResult.success,
+            summary: toolResult.summary || toolResult.result.slice(0, 200),
+            details: toolResult.result,
+            namedOutputs: toolResult.namedOutputs,
+            facts: toolResult.facts,
+            artifact: toolResult.artifact,
+            files: toolResult.files,
+          }),
+        },
+      ];
+
+      // Include screenshot image so Claude can actually see the page
+      if (toolResult.screenshotBase64) {
+        toolContent.push({
+          type: "image",
+          source: { type: "base64", media_type: "image/png", data: toolResult.screenshotBase64 },
+        });
+      }
+
       toolResults.push({
         type: "tool_result",
         tool_use_id: toolBlock.id,
-        content: buildStructuredResultPayload({
-          type: "tool",
-          name: toolBlock.name,
-          success: toolResult.success,
-          summary: toolResult.summary || toolResult.result.slice(0, 200),
-          details: toolResult.result,
-          namedOutputs: toolResult.namedOutputs,
-          facts: toolResult.facts,
-          artifact: toolResult.artifact,
-          files: toolResult.files,
-        }),
+        content: toolContent,
       });
     }
 
@@ -530,6 +549,13 @@ export async function* streamGemini(
           },
         },
       });
+
+      // Include screenshot image so the LLM can actually see the page
+      if (toolResult.screenshotBase64) {
+        functionResponses.push({
+          inlineData: { mimeType: "image/png", data: toolResult.screenshotBase64 },
+        } as Part);
+      }
     }
 
     contents.push({ role: "user", parts: functionResponses });

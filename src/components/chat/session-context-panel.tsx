@@ -125,18 +125,28 @@ export function SessionContextPanel({ state }: SessionContextPanelProps) {
             Senaste outputs
           </p>
           <div className="flex flex-wrap gap-2">
-            {latestOutputs.map((output) => (
-              <div key={output.key} className="rounded-xl border border-border bg-background/70 px-3 py-2">
-                <div className="flex items-center gap-2">
-                  <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase ${outputTone(output.type)}`}>
-                    {output.type}
-                  </span>
-                  <span className="text-xs font-medium text-foreground">{truncate(output.label, 42)}</span>
+            {latestOutputs.map((output) => {
+              const isFile = output.type === "file" && output.refId;
+              const inner = (
+                <div className={`rounded-xl border border-border bg-background/70 px-3 py-2 ${isFile ? "hover:border-primary/30 cursor-pointer transition-colors" : ""}`}>
+                  <div className="flex items-center gap-2">
+                    <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase ${outputTone(output.type)}`}>
+                      {output.type}
+                    </span>
+                    <span className="text-xs font-medium text-foreground">{truncate(output.label, 42)}</span>
+                  </div>
+                  <p className="mt-1 text-xs text-muted-foreground">{truncate(output.value, 72)}</p>
+                  <p className="mt-1 text-[11px] text-muted-foreground/90">Kalla: {formatLabel(output.source)}</p>
                 </div>
-                <p className="mt-1 text-xs text-muted-foreground">{truncate(output.value, 72)}</p>
-                <p className="mt-1 text-[11px] text-muted-foreground/90">Kalla: {formatLabel(output.source)}</p>
-              </div>
-            ))}
+              );
+              return isFile ? (
+                <a key={output.key} href={`/api/serve-file/${output.refId}`} target="_blank" rel="noopener noreferrer" download>
+                  {inner}
+                </a>
+              ) : (
+                <div key={output.key}>{inner}</div>
+              );
+            })}
           </div>
         </div>
       )}
