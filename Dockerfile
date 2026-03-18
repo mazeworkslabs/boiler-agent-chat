@@ -52,9 +52,10 @@ ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 RUN npx playwright install --with-deps chromium && \
     chmod -R o+rx /ms-playwright
 
-# Writable dirs
-RUN mkdir -p /app/uploads /tmp/chat-app-sandbox && \
-    chown nextjs:nodejs /app/uploads /tmp/chat-app-sandbox
+# Writable dirs + uv cache for Python sandbox
+RUN mkdir -p /app/uploads /tmp/chat-app-sandbox /tmp/uv-cache && \
+    chown nextjs:nodejs /app/uploads /tmp/chat-app-sandbox /tmp/uv-cache
+ENV UV_CACHE_DIR=/tmp/uv-cache
 
 USER nextjs
 EXPOSE 3000
