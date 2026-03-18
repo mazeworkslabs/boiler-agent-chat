@@ -213,10 +213,18 @@ export async function executeTool(
         };
       }
       case "web_fetch": {
-        const result = await executeWebFetch(input);
+        const result = await executeWebFetch(input, sessionId);
+        const hasFiles = result.files && result.files.length > 0;
         return {
           ...result,
-          summary: result.success ? "Webbsidan hämtades." : "Webbhämtningen misslyckades.",
+          summary: result.success
+            ? hasFiles
+              ? `Filen laddades ned: ${result.files![0].filename}`
+              : "Webbsidan hämtades."
+            : "Webbhämtningen misslyckades.",
+          namedOutputs: hasFiles
+            ? createNamedOutputsForResources({ sourcePrefix: name, createdAt, files: result.files })
+            : undefined,
         };
       }
       case "web_search": {

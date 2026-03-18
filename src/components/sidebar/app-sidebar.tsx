@@ -67,6 +67,25 @@ export function AppSidebar({
     document.cookie = `sidebar_state=${next ? "collapsed" : "expanded"};max-age=${60 * 60 * 24 * 7};path=/`;
   };
 
+  const deleteSession = async (e: React.MouseEvent, sessionId: string) => {
+    e.stopPropagation();
+    try {
+      const res = await fetchWithAuthRetry("/api/sessions", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId }),
+      });
+      if (res.ok) {
+        setSessions((prev) => prev.filter((s) => s.id !== sessionId));
+        if (sessionId === activeSessionId) {
+          onNewChat();
+        }
+      }
+    } catch {
+      // ignore
+    }
+  };
+
   const toggleTheme = () => {
     const isDark = document.documentElement.classList.toggle("dark");
     localStorage.setItem("theme", isDark ? "dark" : "light");
@@ -141,17 +160,34 @@ export function AppSidebar({
       <div className="flex-1 overflow-y-auto px-3">
         <div className="space-y-1">
           {sessions.map((session) => (
-            <button
+            <div
               key={session.id}
-              onClick={() => onSelectSession(session.id)}
-              className={`w-full truncate rounded-md px-3 py-2 text-left text-sm transition-colors ${
+              className={`group relative flex items-center rounded-md transition-colors ${
                 session.id === activeSessionId
-                  ? "bg-muted font-medium text-foreground"
-                  : "text-muted-foreground hover:bg-muted"
+                  ? "bg-muted"
+                  : "hover:bg-muted"
               }`}
             >
-              {session.title}
-            </button>
+              <button
+                onClick={() => onSelectSession(session.id)}
+                className={`w-full truncate rounded-md px-3 py-2 text-left text-sm transition-colors ${
+                  session.id === activeSessionId
+                    ? "font-medium text-foreground"
+                    : "text-muted-foreground"
+                }`}
+              >
+                {session.title}
+              </button>
+              <button
+                onClick={(e) => deleteSession(e, session.id)}
+                className="absolute right-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-opacity hover:bg-destructive/10 hover:text-destructive group-hover:opacity-100"
+                aria-label="Ta bort chatt"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="h-3.5 w-3.5">
+                  <path d="M3 6h18M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2" />
+                </svg>
+              </button>
+            </div>
           ))}
         </div>
       </div>

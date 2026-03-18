@@ -1,11 +1,18 @@
 import { Type, type FunctionDeclaration } from "@google/genai";
+import { writeFile, mkdir, stat } from "fs/promises";
+import path from "path";
+import crypto from "crypto";
+import { db } from "../db";
+import { generatedFiles } from "../db/schema";
+
+const UPLOADS_DIR = path.join(process.cwd(), "uploads");
 
 // --- web_fetch: hämta och parsa en webbsida ---
 
 export const webFetchToolDefinition = {
   name: "web_fetch",
   description:
-    "Hämta innehållet från en URL. Returnerar text-innehållet (HTML strippat till text om möjligt). Använd för att läsa webbsidor, API:er, dokumentation etc.",
+    "Hämta innehållet från en URL. Returnerar text-innehållet (HTML strippat till text om möjligt). Om URL:en pekar på en PDF eller annan binär fil laddas den ned och sparas automatiskt.",
   input_schema: {
     type: "object" as const,
     properties: {
@@ -24,7 +31,8 @@ export const webFetchToolDefinition = {
 
 export const webFetchGeminiTool: FunctionDeclaration = {
   name: "web_fetch",
-  description: webFetchToolDefinition.description,
+  description:
+    "Hämta innehållet från en URL. Returnerar text-innehållet (HTML strippat till text om möjligt). Om URL:en pekar på en PDF eller annan binär fil laddas den ned och sparas automatiskt.",
   parameters: {
     type: Type.OBJECT,
     properties: {
@@ -51,9 +59,55 @@ function stripHtml(html: string): string {
   return text;
 }
 
+// Binary content types that should be downloaded as files
+const BINARY_TYPES = [
+  "application/pdf",
+  "application/vnd.openxmlformats",
+  "application/vnd.ms-",
+  "application/msword",
+  "application/zip",
+  "application/octet-stream",
+  "image/",
+];
+
+function isBinaryContentType(ct: string): boolean {
+  return BINARY_TYPES.some((t) => ct.includes(t));
+}
+
+function guessFilename(url: string, contentType: string): string {
+  // Try to extract filename from URL path
+  const urlPath = new URL(url).pathname;
+  const basename = urlPath.split("/").pop() || "";
+  if (basename && basename.includes(".")) return decodeURIComponent(basename);
+
+  // Fallback based on content type
+  if (contentType.includes("pdf")) return "downloaded.pdf";
+  if (contentType.includes("spreadsheet") || contentType.includes("xlsx")) return "downloaded.xlsx";
+  if (contentType.includes("presentation") || contentType.includes("pptx")) return "downloaded.pptx";
+  if (contentType.includes("word") || contentType.includes("docx")) return "downloaded.docx";
+  return "downloaded.bin";
+}
+
+function guessMimeType(filename: string, contentType: string): string {
+  if (contentType && !contentType.includes("octet-stream")) return contentType.split(";")[0].trim();
+  const ext = filename.split(".").pop()?.toLowerCase();
+  switch (ext) {
+    case "pdf": return "application/pdf";
+    case "xlsx": return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+    case "pptx": return "application/vnd.openxmlformats-officedocument.presentationml.presentation";
+    case "docx": return "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+    default: return contentType || "application/octet-stream";
+  }
+}
+
 export async function executeWebFetch(
-  input: Record<string, unknown>
-): Promise<{ success: boolean; result: string }> {
+  input: Record<string, unknown>,
+  sessionId?: string
+): Promise<{
+  success: boolean;
+  result: string;
+  files?: Array<{ id: string; filename: string; mimeType: string; sizeBytes: number }>;
+}> {
   const url = input.url as string;
   const extractText = input.extract_text !== false; // default true
 
@@ -61,9 +115,10 @@ export async function executeWebFetch(
     const res = await fetch(url, {
       headers: {
         "User-Agent": "Mozilla/5.0 (compatible; BFAssistant/1.0)",
-        Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,application/pdf,*/*;q=0.8",
       },
-      signal: AbortSignal.timeout(15000),
+      signal: AbortSignal.timeout(30000),
+      redirect: "follow",
     });
 
     if (!res.ok) {
@@ -71,11 +126,45 @@ export async function executeWebFetch(
     }
 
     const contentType = res.headers.get("content-type") || "";
+
+    // Handle binary files (PDFs, Office docs, etc.) — download and save
+    if (isBinaryContentType(contentType) || url.toLowerCase().endsWith(".pdf")) {
+      const buffer = Buffer.from(await res.arrayBuffer());
+      const filename = guessFilename(url, contentType);
+      const mimeType = guessMimeType(filename, contentType);
+      const fileId = crypto.randomUUID();
+      const ext = filename.split(".").pop() || "bin";
+      const destPath = path.join(UPLOADS_DIR, `${fileId}.${ext}`);
+
+      await mkdir(UPLOADS_DIR, { recursive: true });
+      await writeFile(destPath, buffer);
+      const fileStat = await stat(destPath);
+
+      if (sessionId) {
+        await db.insert(generatedFiles).values({
+          id: fileId,
+          sessionId,
+          filename,
+          mimeType,
+          filePath: destPath,
+          sizeBytes: fileStat.size,
+        });
+      }
+
+      const fileInfo = { id: fileId, filename, mimeType, sizeBytes: fileStat.size };
+
+      return {
+        success: true,
+        result: `Filen "${filename}" (${(fileStat.size / 1024).toFixed(1)} KB, ${mimeType}) laddades ned från ${url}`,
+        files: [fileInfo],
+      };
+    }
+
+    // Text/HTML content
     const body = await res.text();
 
     if (extractText && contentType.includes("text/html")) {
       const text = stripHtml(body);
-      // Limit to ~8000 chars to avoid overwhelming the model
       return {
         success: true,
         result: text.length > 8000 ? text.slice(0, 8000) + "\n\n... (trunkerat)" : text,
