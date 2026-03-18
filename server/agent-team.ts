@@ -327,11 +327,19 @@ Leverera fakta med URL-källhänvisningar. Om du hittar relevanta URL:er som beh
 - Extrahera renderat innehåll från JavaScript-tunga sidor och SPAs
 - Vänta på specifika element om det behövs (wait_for parameter)
 
+## Screenshot-parametrar
+- screenshot: true — ta screenshot av viewporten
+- full_page: true — ta screenshot av HELA sidan (scrollar ned automatiskt). Bra för att fånga allt.
+- scroll_to: "footer" / "#about" / "section:nth-of-type(3)" — scrolla till ett specifikt element innan screenshot
+
 ## Riktlinjer
 - Ta ALLTID screenshots om inte uppgiften uttryckligen bara handlar om text
+- Om användaren vill se "hela sidan": använd full_page: true (ETT anrop, en lång bild)
+- Om användaren vill se "toppen och botten": gör TVÅ anrop — ett utan scroll, ett med scroll_to: "footer"
 - Du kan besöka flera URL:er i sekvens
 - Screenshot-filer sparas automatiskt och returneras som nedladdningsbara filer
 - Om en URL inte fungerar, rapportera felet tydligt
+- GÖR INTE fler anrop än vad som efterfrågas — om användaren ber om 2 screenshots, gör exakt 2
 
 {skills}`,
   },

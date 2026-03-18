@@ -27,6 +27,14 @@ export const browseWebToolDefinition = {
         type: "boolean",
         description: "Ta en screenshot av sidan (sparas som PNG). Default: false.",
       },
+      full_page: {
+        type: "boolean",
+        description: "Ta screenshot av hela sidan (scrollar ned). Default: false (bara viewport).",
+      },
+      scroll_to: {
+        type: "string",
+        description: "CSS-selektor att scrolla till innan screenshot. T.ex. 'footer', '#about', 'section:nth-of-type(3)'. Optional.",
+      },
       wait_for: {
         type: "string",
         description: "CSS-selektor att vänta på innan innehåll extraheras. Optional.",
@@ -44,6 +52,8 @@ export const browseWebGeminiTool: FunctionDeclaration = {
     properties: {
       url: { type: Type.STRING, description: "URL att besöka" },
       screenshot: { type: Type.BOOLEAN, description: "Ta screenshot. Default: false." },
+      full_page: { type: Type.BOOLEAN, description: "Screenshot av hela sidan (scrollar ned). Default: false." },
+      scroll_to: { type: Type.STRING, description: "CSS-selektor att scrolla till innan screenshot. T.ex. 'footer', '#about'." },
       wait_for: { type: Type.STRING, description: "CSS-selektor att vänta på. Optional." },
     },
     required: ["url"],
@@ -64,7 +74,7 @@ interface BrowseResult {
 
 async function tryPlaywright(
   url: string,
-  options: { screenshot?: boolean; waitFor?: string },
+  options: { screenshot?: boolean; fullPage?: boolean; scrollTo?: string; waitFor?: string },
   sessionId?: string
 ): Promise<BrowseResult | null> {
   if (playwrightAvailable === false) return null;
@@ -90,6 +100,13 @@ async function tryPlaywright(
       await page.waitForSelector(options.waitFor, { timeout: 10000 }).catch(() => {});
     }
 
+    // Scroll to element if requested (before screenshot)
+    if (options.scrollTo) {
+      await page.locator(options.scrollTo).first().scrollIntoViewIfNeeded({ timeout: 5000 }).catch(() => {});
+      // Small delay for any lazy-loaded content
+      await page.waitForTimeout(500);
+    }
+
     // Extract text content
     const text = await page.evaluate(() => {
       document.querySelectorAll("script, style, noscript, svg").forEach((el) => el.remove());
@@ -106,7 +123,7 @@ async function tryPlaywright(
       const filename = `screenshot_${hostname}.png`;
       const destPath = path.join(UPLOADS_DIR, `${fileId}.png`);
 
-      buffer = Buffer.from(await page.screenshot({ fullPage: false }));
+      buffer = Buffer.from(await page.screenshot({ fullPage: options.fullPage ?? false }));
       await writeFile(destPath, buffer);
 
       const fileStat = await stat(destPath);
@@ -192,11 +209,13 @@ export async function executeBrowseWeb(
 }> {
   const url = input.url as string;
   const screenshot = input.screenshot as boolean | undefined;
+  const fullPage = input.full_page as boolean | undefined;
+  const scrollTo = input.scroll_to as string | undefined;
   const waitFor = input.wait_for as string | undefined;
 
   try {
     // Try Playwright first
-    const pwResult = await tryPlaywright(url, { screenshot, waitFor }, sessionId);
+    const pwResult = await tryPlaywright(url, { screenshot, fullPage, scrollTo, waitFor }, sessionId);
 
     if (pwResult) {
       const truncated =
