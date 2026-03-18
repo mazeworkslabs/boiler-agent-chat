@@ -84,7 +84,7 @@ export function buildSkillContext(skills: Skill[]): string {
 export function buildSkillSummary(skills: Skill[], agentMap: Record<string, string[]>): string {
   if (skills.length === 0) return "";
 
-  const lines = ["\n\n## Specialist-skills (delegera dit)\n"];
+  const lines = ["\n\n## Specialist-skills (redan inladdade hos specialisterna — delegera, sök INTE på webben)\n"];
 
   for (const skill of skills) {
     const targets = agentMap[skill.name];
