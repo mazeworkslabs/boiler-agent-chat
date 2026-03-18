@@ -976,6 +976,7 @@ export function ChatPanel({
   const [timelineTurns, setTimelineTurns] = useState<TimelineTurn[]>([]);
   const [generatedFiles, setGeneratedFiles] = useState<GeneratedFile[]>([]);
   const [sessionSnapshot, setSessionSnapshot] = useState<SessionStateSnapshot | null>(null);
+  const [workspaceOpen, setWorkspaceOpen] = useState(false);
   const [isStreaming, setIsStreaming] = useState(false);
   const [isStartingResponse, setIsStartingResponse] = useState(false);
   const [activeTurnId, setActiveTurnId] = useState<string | null>(null);
@@ -1383,8 +1384,6 @@ export function ChatPanel({
             </div>
           )}
 
-          <SessionContextPanel state={sessionSnapshot} />
-
           {timelineTurns.map((turn) => (
             <section key={turn.id} className="space-y-3">
               <MessageBubble
@@ -1433,6 +1432,61 @@ export function ChatPanel({
             </svg>
           </button>
         </div>
+      )}
+
+      {/* Workspace button — compact pill above chat input */}
+      {sessionSnapshot && (
+        sessionSnapshot.generatedFiles.length > 0 ||
+        sessionSnapshot.artifacts.length > 0 ||
+        sessionSnapshot.attachments.length > 0 ||
+        sessionSnapshot.namedOutputs.length > 0
+      ) && (
+        <>
+          <button
+            onClick={() => setWorkspaceOpen(true)}
+            className="mx-auto flex items-center gap-2 border-t border-border bg-card px-4 py-2 text-xs text-muted-foreground transition-colors hover:text-foreground"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" className="h-3.5 w-3.5">
+              <path d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
+            </svg>
+            <span>Delad arbetsyta</span>
+            <span className="flex gap-1.5">
+              {sessionSnapshot.generatedFiles.length > 0 && (
+                <span className="rounded-full bg-muted px-1.5 py-0.5">{sessionSnapshot.generatedFiles.length} filer</span>
+              )}
+              {sessionSnapshot.artifacts.length > 0 && (
+                <span className="rounded-full bg-muted px-1.5 py-0.5">{sessionSnapshot.artifacts.length} artifacts</span>
+              )}
+              {sessionSnapshot.attachments.length > 0 && (
+                <span className="rounded-full bg-muted px-1.5 py-0.5">{sessionSnapshot.attachments.length} bilagor</span>
+              )}
+            </span>
+          </button>
+
+          {/* Workspace modal */}
+          {workspaceOpen && (
+            <div className="fixed inset-0 z-50 flex items-end justify-center sm:items-center" onClick={() => setWorkspaceOpen(false)}>
+              <div className="fixed inset-0 bg-black/50" />
+              <div
+                className="relative mx-4 mb-4 max-h-[70vh] w-full max-w-2xl overflow-y-auto rounded-2xl border border-border bg-card p-4 shadow-xl sm:mb-0"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div className="flex items-center justify-between mb-3">
+                  <h3 className="text-sm font-semibold text-foreground">Delad arbetsyta</h3>
+                  <button
+                    onClick={() => setWorkspaceOpen(false)}
+                    className="rounded-md p-1 text-muted-foreground hover:text-foreground"
+                  >
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4">
+                      <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
+                    </svg>
+                  </button>
+                </div>
+                <SessionContextPanel state={sessionSnapshot} />
+              </div>
+            </div>
+          )}
+        </>
       )}
 
       <ChatInput

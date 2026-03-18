@@ -104,23 +104,15 @@ export function SessionContextPanel({ state }: SessionContextPanelProps) {
   if (!hasContent) return null;
 
   return (
-    <section className="rounded-2xl border border-border bg-card/85 px-4 py-3 shadow-sm">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div>
-          <h3 className="text-sm font-semibold text-foreground">Delad kontext</h3>
-          <p className="text-xs text-muted-foreground">
-            Samma state delas nu mellan lead-agent, specialister och nasta steg.
-          </p>
-        </div>
-        <div className="flex flex-wrap gap-1.5 text-[11px] text-muted-foreground">
-          <span className="rounded-full bg-muted px-2 py-1">{state.generatedFiles.length} filer</span>
-          <span className="rounded-full bg-muted px-2 py-1">{state.artifacts.length} artifacts</span>
-          <span className="rounded-full bg-muted px-2 py-1">{state.attachments.length} bilagor</span>
-        </div>
+    <section className="space-y-3">
+      <div className="flex flex-wrap gap-1.5 text-[11px] text-muted-foreground">
+        <span className="rounded-full bg-muted px-2 py-1">{state.generatedFiles.length} filer</span>
+        <span className="rounded-full bg-muted px-2 py-1">{state.artifacts.length} artifacts</span>
+        <span className="rounded-full bg-muted px-2 py-1">{state.attachments.length} bilagor</span>
       </div>
 
       {latestOutputs.length > 0 && (
-        <div className="mt-3">
+        <div>
           <p className="mb-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
             Senaste outputs
           </p>
@@ -152,7 +144,7 @@ export function SessionContextPanel({ state }: SessionContextPanelProps) {
       )}
 
       {recentDelegates.length > 0 && (
-        <div className="mt-3">
+        <div>
           <p className="mb-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
             Specialistoverlamningar
           </p>
@@ -172,7 +164,7 @@ export function SessionContextPanel({ state }: SessionContextPanelProps) {
       )}
 
       {latestFacts.length > 0 && (
-        <div className="mt-3">
+        <div>
           <p className="mb-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
             Viktiga fakta
           </p>
