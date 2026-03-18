@@ -27,17 +27,17 @@ ssh -L 5433:127.0.0.1:5433 glsfbg -N
 
 ## Agent Team (server/agent-team.ts)
 
-7 specialized agents, orchestrated by a classifier that routes tasks:
+Lead agent with delegation to 7 specialists:
 
 | Agent | Tools | Role |
 |-------|-------|------|
 | `db_researcher` | query_database | Internal data (has full DB schema injected at startup) |
 | `api_researcher` | run_code | External APIs (SCB PxWeb etc.) via Python |
-| `web_researcher` | web_search, web_fetch, browse_web | News, reports, qualitative info. Gemini: Google Search grounding |
+| `web_researcher` | web_search, web_fetch (Gemini: Google Search grounding) | Search the web for news, reports, qualitative info |
+| `web_browser` | browse_web | Visit URLs with headless Chrome, take screenshots, extract rendered content |
 | `analyst` | run_code | Data analysis, charts, calculations |
 | `doc_designer` | run_code (gemini-3.1-pro-preview) | .pptx, .xlsx, .docx files. Can edit existing files |
 | `artifact_designer` | create_artifact | Interactive HTML dashboards in preview panel |
-| `writer` | (none) | Text responses: reports, emails, summaries |
 
 Modes (toggle in UI): **Chat** (flat loop), **Auto** (orchestrator decides), **Team** (force agent team)
 

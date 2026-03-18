@@ -69,7 +69,10 @@ async function tryPlaywright(
     const pw = await import("playwright");
     playwrightAvailable = true;
 
-    const browser = await pw.chromium.launch({ headless: true });
+    const browser = await pw.chromium.launch({
+      headless: true,
+      executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || undefined,
+    });
     const page = await browser.newPage();
 
     await page.goto(url, { waitUntil: "networkidle", timeout: 30000 });

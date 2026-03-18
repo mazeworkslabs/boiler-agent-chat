@@ -1,5 +1,9 @@
 FROM node:20-alpine AS base
-RUN apk add --no-cache curl python3 py3-pip
+RUN apk add --no-cache curl python3 py3-pip \
+    chromium nss freetype harfbuzz ca-certificates ttf-freefont
+# Tell Playwright to use system Chromium instead of downloading its own
+ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
+ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium-browser
 # Install uv for Python sandbox
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh && mv /root/.local/bin/uv /usr/local/bin/uv
 # Install pnpm

@@ -83,6 +83,7 @@ const SPECIALIST_NAMES = [
   "db_researcher",
   "api_researcher",
   "web_researcher",
+  "web_browser",
   "analyst",
   "doc_designer",
   "artifact_designer",
@@ -96,6 +97,7 @@ Available specialists:
 - db_researcher: Query internal databases (company financials, KPIs, planning). Has full DB schema.
 - api_researcher: Fetch fresh data from external APIs (SCB PxWeb etc.) via Python code.
 - web_researcher: Search the web for news, reports, qualitative info. Do NOT use for data already in a PDF or database.
+- web_browser: Visit specific URLs with a real browser (headless Chrome). Takes screenshots, extracts rendered content from JS-heavy sites/SPAs. Use when you have a URL and need a screenshot or rendered page content.
 - analyst: Data analysis, charts, calculations with Python. Can read uploaded PDFs/images directly.
 - doc_designer: Create/edit professional files (.pptx, .xlsx, .docx). Uses gemini-pro model. Can read uploaded PDFs.
 - artifact_designer: Create interactive HTML dashboards shown in preview panel.
@@ -294,13 +296,34 @@ const SPECIALISTS: Record<string, AgentDef> = {
     name: "web_researcher",
     label: "Webbforskare",
     emoji: "🌐",
-    toolNames: ["web_search", "web_fetch", "browse_web"],
+    toolNames: ["web_search", "web_fetch"],
     geminiOverrides: { toolNames: [], googleSearch: true },
     promptTemplate: `Du söker information på webben.
 
 VIKTIGT: Sök BARA det som uttryckligen efterfrågas. Om informationen redan finns i uppgiftsbeskrivningen — SÖK INTE efter den.
 
-Leverera fakta med URL-källhänvisningar.
+Leverera fakta med URL-källhänvisningar. Om du hittar relevanta URL:er som behöver besökas med en riktig webbläsare (t.ex. för screenshots), nämn dessa URL:er i ditt svar — lead-agenten kan delegera vidare till web_browser.
+
+{skills}`,
+  },
+
+  web_browser: {
+    name: "web_browser",
+    label: "Webbläsare",
+    emoji: "🖥️",
+    toolNames: ["browse_web"],
+    promptTemplate: `Du besöker webbsidor med en riktig webbläsare (headless Chrome via Playwright).
+
+## Dina uppgifter
+- Besök URL:er och ta screenshots (sätt screenshot: true)
+- Extrahera renderat innehåll från JavaScript-tunga sidor och SPAs
+- Vänta på specifika element om det behövs (wait_for parameter)
+
+## Riktlinjer
+- Ta ALLTID screenshots om inte uppgiften uttryckligen bara handlar om text
+- Du kan besöka flera URL:er i sekvens
+- Screenshot-filer sparas automatiskt och returneras som nedladdningsbara filer
+- Om en URL inte fungerar, rapportera felet tydligt
 
 {skills}`,
   },
@@ -392,6 +415,7 @@ Du kan också DELEGERA komplexa uppgifter till specialister med delegate-verktyg
 - db_researcher — fokuserade databas-queries (har komplett schema)
 - api_researcher — hämtar data från externa API:er (SCB etc.)
 - web_researcher — djup webbsökning (Gemini: Google Search grounding)
+- web_browser — besöker URL:er med riktig webbläsare, tar screenshots, extraherar renderat innehåll
 - analyst — dataanalys, diagram, beräkningar med Python
 - doc_designer — skapar .pptx, .xlsx, .docx (använder gemini-pro)
 - artifact_designer — interaktiva HTML-dashboards
@@ -541,6 +565,8 @@ function getDefaultDeliverable(agent: SpecialistName): string {
       return "Ett strukturerat underlag från externa API:er som kan användas direkt i nästa steg.";
     case "web_researcher":
       return "Ett kort researchunderlag med relevanta källor och tydliga slutsatser.";
+    case "web_browser":
+      return "Screenshots och/eller extraherat innehåll från de besökta webbsidorna.";
     default:
       return "Ett färdigt specialistunderlag som löser uppgiften.";
   }
@@ -555,6 +581,8 @@ function getDefaultMaxToolCalls(agent: SpecialistName): number {
     case "api_researcher":
       return 5;
     case "web_researcher":
+      return 4;
+    case "web_browser":
       return 4;
     case "doc_designer":
       return 3;
