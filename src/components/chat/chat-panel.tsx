@@ -648,6 +648,201 @@ function findGlobalImageIndex(files: GeneratedFile[], fileId: string): number {
   return imageFiles.findIndex((file) => file.id === fileId);
 }
 
+// ---------------------------------------------------------------------------
+// Agent tool-call grouping — collapse consecutive same-agent tool calls
+// ---------------------------------------------------------------------------
+
+type RenderItem =
+  | { kind: "event"; event: TimelineEvent }
+  | { kind: "agent_group"; agent: string; toolCalls: TimelineToolCallEvent[]; thinkingCount: number; files: TimelineFilesEvent[] };
+
+function groupEventsForRendering(events: TimelineEvent[]): RenderItem[] {
+  const items: RenderItem[] = [];
+  let currentGroup: { agent: string; toolCalls: TimelineToolCallEvent[]; thinkingCount: number; files: TimelineFilesEvent[] } | null = null;
+
+  function flushGroup() {
+    if (currentGroup) {
+      items.push({ kind: "agent_group", ...currentGroup });
+      currentGroup = null;
+    }
+  }
+
+  for (const event of events) {
+    // Tool calls with an agent (specialist sub-tool) → group
+    if (event.type === "tool_call" && event.agent && event.resultKind !== "delegate") {
+      if (currentGroup && currentGroup.agent === event.agent) {
+        currentGroup.toolCalls.push(event);
+      } else {
+        flushGroup();
+        currentGroup = { agent: event.agent, toolCalls: [event], thinkingCount: 0, files: [] };
+      }
+      continue;
+    }
+
+    // Thinking events within an active group → absorb
+    if (event.type === "thinking" && currentGroup) {
+      currentGroup.thinkingCount++;
+      continue;
+    }
+
+    // Files within an active group → absorb
+    if (event.type === "files" && currentGroup) {
+      currentGroup.files.push(event);
+      continue;
+    }
+
+    // Anything else breaks the group
+    flushGroup();
+    items.push({ kind: "event", event });
+  }
+
+  flushGroup();
+  return items;
+}
+
+const AGENT_LABELS: Record<string, { label: string; emoji: string }> = {
+  db_researcher: { label: "Databasforskare", emoji: "🗄️" },
+  api_researcher: { label: "API-forskare", emoji: "📡" },
+  web_researcher: { label: "Webbforskare", emoji: "🌐" },
+  web_browser: { label: "Webbläsare", emoji: "🖥️" },
+  analyst: { label: "Analytiker", emoji: "📊" },
+  doc_designer: { label: "Dokumentdesigner", emoji: "📑" },
+  artifact_designer: { label: "Artifaktdesigner", emoji: "✨" },
+};
+
+function CollapsedAgentToolGroup({
+  agent,
+  toolCalls,
+  files,
+  allFiles,
+  setLightboxIndex,
+}: {
+  agent: string;
+  toolCalls: TimelineToolCallEvent[];
+  files: TimelineFilesEvent[];
+  allFiles: GeneratedFile[];
+  setLightboxIndex: (index: number) => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const meta = AGENT_LABELS[agent] || { label: agent, emoji: "🔧" };
+
+  const completed = toolCalls.filter((tc) => tc.status !== "running");
+  const running = toolCalls.find((tc) => tc.status === "running");
+  const failed = toolCalls.filter((tc) => tc.status === "error").length;
+  const allDone = !running;
+  const latestCompleted = completed[completed.length - 1];
+
+  // Collect named outputs from all completed calls
+  const allOutputs = completed.flatMap((tc) => tc.namedOutputs || []);
+
+  const statusColor = allDone
+    ? failed > 0 && failed === completed.length
+      ? "border-destructive/20 bg-destructive/5"
+      : "border-emerald-500/20 bg-emerald-500/5"
+    : "border-primary/20 bg-primary/5";
+
+  const badgeColor = allDone
+    ? failed > 0 && failed === completed.length
+      ? "bg-destructive/10 text-destructive"
+      : "bg-emerald-500/10 text-emerald-600"
+    : "bg-primary/10 text-primary";
+
+  return (
+    <div className={`rounded-xl border px-3 py-2 shadow-sm ${statusColor}`}>
+      {/* Header row */}
+      <div className="flex items-center gap-2">
+        <div className={`inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium ${badgeColor}`}>
+          {running ? (
+            <svg className="h-3 w-3 animate-spin" viewBox="0 0 24 24" fill="none">
+              <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth={2} className="opacity-25" />
+              <path d="M4 12a8 8 0 018-8" stroke="currentColor" strokeWidth={2} strokeLinecap="round" />
+            </svg>
+          ) : (
+            <span className="text-xs">{meta.emoji}</span>
+          )}
+          <span>{meta.label}</span>
+        </div>
+
+        {/* Live status */}
+        <span className="text-xs text-muted-foreground">
+          {running
+            ? `${completed.length + 1}/${toolCalls.length} verktygsanrop...`
+            : `${completed.length} verktygsanrop${failed > 0 ? ` (${failed} misslyckade)` : ""}`
+          }
+        </span>
+
+        {/* Expand toggle */}
+        {allDone && completed.length > 1 && (
+          <button
+            onClick={() => setExpanded((prev) => !prev)}
+            className="ml-auto text-xs text-muted-foreground hover:text-foreground transition-colors"
+          >
+            {expanded ? "Dölj" : "Visa detaljer"}
+          </button>
+        )}
+      </div>
+
+      {/* Latest status / summary when not expanded */}
+      {!expanded && latestCompleted?.summary && (
+        <p className="mt-1.5 text-sm text-foreground">{latestCompleted.summary}</p>
+      )}
+
+      {/* Named outputs */}
+      {!expanded && allOutputs.length > 0 && (
+        <div className="mt-2 flex flex-wrap gap-2">
+          {allOutputs.slice(-3).map((output) => (
+            <span
+              key={output.key}
+              className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-medium ${
+                output.type === "file" ? "bg-emerald-500/10 text-emerald-700"
+                : output.type === "artifact" ? "bg-sky-500/10 text-sky-700"
+                : "bg-muted text-muted-foreground"
+              }`}
+            >
+              <span className="uppercase">{output.type}</span>
+              <span>{output.label}</span>
+            </span>
+          ))}
+        </div>
+      )}
+
+      {/* Expanded: show individual tool calls */}
+      {expanded && (
+        <div className="mt-2 space-y-1.5 border-t border-border/50 pt-2">
+          {completed.map((tc) => (
+            <div key={tc.toolId} className="flex items-center gap-2 text-xs">
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" className={`h-3 w-3 shrink-0 ${tc.status === "error" ? "text-destructive" : "text-emerald-500"}`}>
+                {tc.status === "error" ? <path d="M18 6 6 18M6 6l12 12" /> : <path d="M20 6 9 17l-5-5" />}
+              </svg>
+              <span className="text-muted-foreground">{tc.toolName === "run_code" ? "Kör kod" : tc.toolName}</span>
+              {tc.summary && <span className="text-foreground truncate">{tc.summary}</span>}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Render any files from within the group */}
+      {files.length > 0 && (
+        <div className="mt-2">
+          {files.map((fileEvent) => (
+            <FileDownload
+              key={fileEvent.id}
+              files={fileEvent.files}
+              onImageClick={(localIndex) => {
+                const eventImages = fileEvent.files.filter((f) => f.mimeType.startsWith("image/")).reverse();
+                const selectedFile = eventImages[localIndex];
+                if (!selectedFile) return;
+                const globalIndex = findGlobalImageIndex(allFiles, selectedFile.id);
+                if (globalIndex !== -1) setLightboxIndex(globalIndex);
+              }}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function renderTimelineEvent(
   event: TimelineEvent,
   allFiles: GeneratedFile[],
@@ -1198,7 +1393,20 @@ export function ChatPanel({
 
               {renderPreparingState(turn)}
 
-              {turn.events.map((event) => renderTimelineEvent(event, generatedFiles, setLightboxIndex))}
+              {groupEventsForRendering(turn.events).map((item) =>
+                item.kind === "event"
+                  ? renderTimelineEvent(item.event, generatedFiles, setLightboxIndex)
+                  : (
+                    <CollapsedAgentToolGroup
+                      key={`group:${item.agent}:${item.toolCalls[0]?.toolId}`}
+                      agent={item.agent}
+                      toolCalls={item.toolCalls}
+                      files={item.files}
+                      allFiles={generatedFiles}
+                      setLightboxIndex={setLightboxIndex}
+                    />
+                  )
+              )}
             </section>
           ))}
 
