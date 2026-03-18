@@ -18,7 +18,7 @@
 
 import Anthropic from "@anthropic-ai/sdk";
 import { GoogleGenAI, type Content, type Part, type FunctionDeclaration } from "@google/genai";
-import { loadSkills, buildSkillContext, type Skill } from "./skill-loader";
+import { loadSkills, buildSkillContext, buildSkillSummary, type Skill } from "./skill-loader";
 import { buildGeminiParts, buildAnthropicContent } from "./utils/multimodal";
 import {
   type LLMProvider,
@@ -272,6 +272,9 @@ const SPECIALISTS: Record<string, AgentDef> = {
 - Falkenbergs kommun-id är '1382'
 - Leverera STRUKTURERAD data med årtal — analysen görs av den som bad dig
 
+## Stora resultat
+Om du hämtar MER än ~20 rader: sammanfatta de viktigaste insikterna i text och strukturera datan kompakt (t.ex. som en tabell med de 10 viktigaste raderna). Nämn att fullständig data finns om analyst behöver köra vidare analys.
+
 {skills}`,
   },
 
@@ -288,6 +291,9 @@ const SPECIALISTS: Record<string, AgentDef> = {
 - Inkludera Falkenberg (1382) och Riket (00) för jämförelse
 - SCB returnerar ANTAL — beräkna andelar själv
 - Rate limit: time.sleep(0.5) mellan anrop
+
+## Stora resultat → spara som fil
+Om du hämtar MER än ~20 rader: spara resultatet som CSV/JSON med pandas istället för att skriva allt i svaret. Nästa agent kan ladda in filen direkt. Exempel: "Sparade SCB-data till scb_befolkning.csv"
 
 {skills}`,
   },
@@ -342,6 +348,12 @@ Leverera fakta med URL-källhänvisningar. Om du hittar relevanta URL:er som beh
 - BF-färger: #1B5E7B (primär), #E8A838 (guld), #2E8B57 (grön), #0D3B52 (mörk)
 - Leverera en KOMPLETT sammanfattning av alla datapunkter och insikter
 
+## Iterativt arbetssätt
+- Ladda data och verifiera FÖRST (print shape, columns, head)
+- Skapa och spara diagram SEDAN
+- Om du har filer från andra agenter (CSV, JSON): ladda dem med pandas
+- Spara varje diagram som separat PNG så doc_designer kan använda dem
+
 {skills}`,
   },
 
@@ -351,7 +363,7 @@ Leverera fakta med URL-källhänvisningar. Om du hittar relevanta URL:er som beh
     emoji: "📑",
     toolNames: ["run_code"],
     modelOverride: { gemini: "gemini-3.1-pro-preview" },
-    promptTemplate: `Du skapar professionella nedladdningsbara filer med Python.
+    promptTemplate: `Du skapar och REDIGERAR professionella nedladdningsbara filer med Python.
 
 ## Bibliotek: python-pptx, openpyxl, python-docx, Pillow, matplotlib
 
@@ -361,7 +373,57 @@ Leverera fakta med URL-källhänvisningar. Om du hittar relevanta URL:er som beh
 - Basera på ALL data du fått i uppgiftsbeskrivningen
 - Diagrambilder finns i arbetskatalogen — använd dem!
 - Följ Business Falkenbergs grafiska profil
-- Vid redigering: öppna befintlig fil, ändra, spara med samma namn
+
+## Redigering av befintliga filer (FÖREDRA framför att bygga om)
+
+När användaren vill UPPDATERA en befintlig fil — bygg INTE om från scratch! Öppna den befintliga filen och ändra bara det som behövs:
+
+### PPTX — byta bild/graf:
+\`\`\`python
+import zipfile, shutil, os
+
+# 1. Packa upp PPTX (det är en ZIP)
+with zipfile.ZipFile("befintlig.pptx", "r") as z:
+    z.extractall("pptx_unpacked")
+
+# 2. Ersätt bilden i ppt/media/ (behåll samma filnamn)
+shutil.copy("chart1-correct.png", "pptx_unpacked/ppt/media/image1.png")
+
+# 3. Packa ihop igen
+with zipfile.ZipFile("uppdaterad.pptx", "w", zipfile.ZIP_DEFLATED) as z:
+    for root, dirs, files in os.walk("pptx_unpacked"):
+        for f in files:
+            filepath = os.path.join(root, f)
+            arcname = os.path.relpath(filepath, "pptx_unpacked")
+            z.write(filepath, arcname)
+\`\`\`
+
+### PPTX — byta text:
+\`\`\`python
+from pptx import Presentation
+prs = Presentation("befintlig.pptx")
+for slide in prs.slides:
+    for shape in slide.shapes:
+        if shape.has_text_frame:
+            for para in shape.text_frame.paragraphs:
+                for run in para.runs:
+                    run.text = run.text.replace("Gammal text", "Ny text")
+prs.save("uppdaterad.pptx")
+\`\`\`
+
+### XLSX — uppdatera celler:
+\`\`\`python
+from openpyxl import load_workbook
+wb = load_workbook("befintlig.xlsx")
+ws = wb.active
+ws["B3"] = "Nytt värde"
+wb.save("uppdaterad.xlsx")
+\`\`\`
+
+### Generell regel:
+- Om du har en befintlig fil i kontextreferenserna → REDIGERA den
+- Bygg bara från scratch om det inte finns en befintlig fil
+- Kör ett steg i taget vid komplexa redigeringar: verifiera att filen finns, gör ändringen, spara
 
 {skills}`,
   },
@@ -392,7 +454,7 @@ function buildLeadAgentPrompt(
   options?: { mode?: "auto" | "team" }
 ): string {
   const skills = getSkills();
-  const skillContext = buildSkillContext(skills);
+  const skillSummary = buildSkillSummary(skills, SKILL_AGENT_MAP);
   const schemaContext = getSchemaContext();
   const sessionStateContext = sessionState ? buildSessionStateContext(sessionState) : "";
   const modeGuidance =
@@ -431,8 +493,16 @@ GÖR SJÄLV:
 DELEGERA:
 - Komplexa flerstegsprojekt (t.ex. "analysera data och gör en presentation")
 - Dokumentskapande (.pptx, .xlsx, .docx) — delegera till doc_designer
+- REDIGERING av befintliga filer (.pptx, .xlsx, .docx) — delegera till doc_designer med filen som kontextreferens
 - Djup dataanalys med diagram — delegera till analyst
 - Stora databas-undersökningar — delegera till db_researcher (har komplett schema)
+
+## Data-handoff mellan specialister
+Vid flerstegsprojekt (data → analys → dokument):
+- api_researcher/db_researcher sparar stora dataset som CSV/JSON-filer
+- analyst kan ladda in dessa filer med pandas och spara diagram som PNG
+- doc_designer plockar upp diagram-PNG:er och datafiler från arbetskatalogen
+Inkludera alltid filnamn i contextRefs när du delegerar till nästa specialist!
 
 Du kan delegera FLERA gånger i rad, t.ex.:
 1. delegate till analyst ("analysera denna PDF och skapa diagram")
@@ -484,7 +554,7 @@ Om du ser [REDIGERA ARTIFACT] i meddelandet:
 ${modeGuidance}
 
 ${sessionStateContext ? `${sessionStateContext}\n` : ""}
-${skillContext}`;
+${skillSummary}`;
 }
 
 // ---------------------------------------------------------------------------

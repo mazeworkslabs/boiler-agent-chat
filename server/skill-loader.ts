@@ -75,3 +75,23 @@ export function buildSkillContext(skills: Skill[]): string {
 
   return lines.join("\n");
 }
+
+/**
+ * Build a compact summary of skills for the lead agent.
+ * Only includes name + description — no full content.
+ * This keeps the lead agent focused on delegation rather than execution.
+ */
+export function buildSkillSummary(skills: Skill[], agentMap: Record<string, string[]>): string {
+  if (skills.length === 0) return "";
+
+  const lines = ["\n\n## Specialist-skills (delegera dit)\n"];
+
+  for (const skill of skills) {
+    const targets = agentMap[skill.name];
+    if (!targets || targets.length === 0) continue;
+    const agents = targets.join(", ");
+    lines.push(`- **${skill.name}** → ${agents}${skill.description ? `: ${skill.description}` : ""}`);
+  }
+
+  return lines.join("\n");
+}
