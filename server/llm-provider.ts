@@ -48,7 +48,8 @@ export const GEMINI_MODELS = [
 ] as const;
 
 export const ANTHROPIC_MODELS = [
-  { id: "claude-sonnet-4-20250514", label: "Claude Sonnet 4" },
+  { id: "claude-sonnet-4-6", label: "Claude Sonnet 4.6" },
+  { id: "claude-haiku-4-5-20251001", label: "Claude Haiku 4.5" },
 ] as const;
 
 export const DEFAULT_GEMINI_MODEL = GEMINI_MODELS[0].id;
