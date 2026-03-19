@@ -1091,7 +1091,11 @@ export function ChatPanel({
         }
         break;
       }
-      case "history":
+      case "history": {
+        // Don't replace timeline if we're actively streaming — the pending turn
+        // has the user message that may not be in history yet (race condition on new sessions)
+        if (currentTurnIdRef.current) break;
+
         setTimelineTurns(buildFallbackTimelineFromHistory((msg.messages as HistoryMessage[]) || []));
         setGeneratedFiles([]);
         setSessionSnapshot(null);
@@ -1102,6 +1106,7 @@ export function ChatPanel({
         }
         onReplaceArtifactsRef.current?.([]);
         break;
+      }
       case "session_state": {
         const nextState = (msg.state as SessionStateSnapshot | null) || null;
         setSessionSnapshot(nextState);
