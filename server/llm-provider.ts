@@ -30,6 +30,9 @@ import {
   browseWebGeminiTool,
   executeBrowseWeb,
 } from "./tools/browse-web";
+import {
+  executeAddToMemory,
+} from "./tools/add-to-memory";
 import path from "path";
 import {
   buildSessionStateContext,
@@ -161,7 +164,8 @@ export interface ToolResult {
 export async function executeTool(
   name: string,
   input: Record<string, unknown>,
-  sessionId?: string
+  sessionId?: string,
+  userEmail?: string
 ): Promise<ToolResult> {
   try {
     const createdAt = new Date().toISOString();
@@ -257,6 +261,16 @@ export async function executeTool(
           screenshotBase64: result.screenshotBase64,
         };
       }
+      case "add_to_memory": {
+        if (!userEmail) {
+          return { success: false, result: "Kan inte spara minne utan inloggad användare." };
+        }
+        const memResult = await executeAddToMemory(input, userEmail);
+        return {
+          ...memResult,
+          summary: memResult.success ? "Lärdom sparad till minnet." : "Kunde inte spara lärdom.",
+        };
+      }
       default:
         return { success: false, result: `Okänt verktyg: ${name}` };
     }
@@ -345,7 +359,8 @@ export async function* streamAnthropic(
       const toolResult = await executeTool(
         toolBlock.name,
         toolBlock.input as Record<string, unknown>,
-        sessionId
+        sessionId,
+        sessionState?.userEmail
       );
 
       // Emit artifact event if tool created one
@@ -532,7 +547,7 @@ export async function* streamGemini(
       const toolId = `${fc.name}_${Date.now()}`;
       yield { type: "tool_use", toolName: fc.name, toolId, input: fc.args };
 
-      const toolResult = await executeTool(fc.name, fc.args, sessionId);
+      const toolResult = await executeTool(fc.name, fc.args, sessionId, sessionState?.userEmail);
 
       // Emit artifact event if tool created one
       if (toolResult.artifact) {

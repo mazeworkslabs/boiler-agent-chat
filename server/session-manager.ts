@@ -249,6 +249,7 @@ export class SessionManager {
       artifacts: sessionArtifacts,
       files: sessionFiles,
     });
+    currentSessionState.userEmail = userEmail;
     currentSessionState = startTurnInSessionState(currentSessionState, {
       turnId,
       userMessage: fullContent,

@@ -51,6 +51,11 @@ import {
   browseWebToolDefinition,
   browseWebGeminiTool,
 } from "./tools/browse-web";
+import {
+  addToMemoryToolDefinition,
+  addToMemoryGeminiTool,
+  loadUserMemory,
+} from "./tools/add-to-memory";
 import { getSchemaContext, getSchemaSummary } from "./db/schema-cache";
 import path from "path";
 import {
@@ -73,6 +78,7 @@ const TOOL_DEFS: Record<string, { anthropic: object; gemini: object }> = {
   web_fetch: { anthropic: webFetchToolDefinition, gemini: webFetchGeminiTool },
   web_search: { anthropic: webSearchToolDefinition, gemini: webSearchGeminiTool },
   browse_web: { anthropic: browseWebToolDefinition, gemini: browseWebGeminiTool },
+  add_to_memory: { anthropic: addToMemoryToolDefinition, gemini: addToMemoryGeminiTool },
 };
 
 // ---------------------------------------------------------------------------
@@ -257,7 +263,7 @@ const SPECIALISTS: Record<string, AgentDef> = {
     name: "db_researcher",
     label: "Databasforskare",
     emoji: "🗄️",
-    toolNames: ["query_database", "run_code"],
+    toolNames: ["query_database", "run_code", "add_to_memory"],
     promptTemplate: `Du är en databasspecialist. Hämta exakt den data som efterfrågas.
 
 ## Databasschema
@@ -284,7 +290,7 @@ Exempel: "Sparade 340 rader till housing_data.csv. Täcker 2018-2024 för Falken
     name: "api_researcher",
     label: "API-forskare",
     emoji: "📡",
-    toolNames: ["run_code"],
+    toolNames: ["run_code", "add_to_memory"],
     promptTemplate: `Du hämtar data från externa API:er (främst SCB PxWeb) via Python.
 
 ## Riktlinjer
@@ -304,7 +310,7 @@ Om du hämtar MER än ~20 rader: spara resultatet som CSV/JSON med pandas istäl
     name: "web_researcher",
     label: "Webbforskare",
     emoji: "🌐",
-    toolNames: ["web_search", "web_fetch"],
+    toolNames: ["web_search", "web_fetch", "add_to_memory"],
     geminiOverrides: { toolNames: [], googleSearch: true },
     promptTemplate: `Du söker information på webben.
 
@@ -319,7 +325,7 @@ Leverera fakta med URL-källhänvisningar. Om du hittar relevanta URL:er som beh
     name: "web_browser",
     label: "Webbläsare",
     emoji: "🖥️",
-    toolNames: ["browse_web"],
+    toolNames: ["browse_web", "add_to_memory"],
     promptTemplate: `Du besöker webbsidor med en riktig webbläsare (headless Chrome via Playwright).
 
 ## Dina uppgifter
@@ -348,7 +354,7 @@ Leverera fakta med URL-källhänvisningar. Om du hittar relevanta URL:er som beh
     name: "analyst",
     label: "Analytiker",
     emoji: "📊",
-    toolNames: ["run_code"],
+    toolNames: ["run_code", "add_to_memory"],
     promptTemplate: `Du analyserar data och skapar diagram med Python. Du tänker som en senior analytiker — hitta mönster, avvikelser och insikter, inte bara "plotta datan".
 
 ## VIKTIGT
@@ -379,7 +385,7 @@ Leverera fakta med URL-källhänvisningar. Om du hittar relevanta URL:er som beh
     name: "doc_designer",
     label: "Dokumentdesigner",
     emoji: "📑",
-    toolNames: ["run_code"],
+    toolNames: ["run_code", "add_to_memory"],
     modelOverride: { gemini: "gemini-3.1-pro-preview" },
     promptTemplate: `Du skapar och REDIGERAR professionella nedladdningsbara filer med Python. Du bygger dokument som en senior konsult — inte bara "data på slides" utan med narrativ, slutsatser och visuell kvalitet.
 
@@ -464,7 +470,7 @@ wb.save("uppdaterad.xlsx")
     name: "artifact_designer",
     label: "Artifaktdesigner",
     emoji: "✨",
-    toolNames: ["create_artifact"],
+    toolNames: ["create_artifact", "add_to_memory"],
     promptTemplate: `Du skapar interaktiva HTML-dashboards som visas i en preview-panel.
 
 Använd ALLTID create_artifact med type "html" och en komplett HTML-sida.
@@ -481,20 +487,24 @@ Om <existing-artifact>-taggar finns: gör BARA de ändringar som efterfrågas.
 // Lead agent system prompt
 // ---------------------------------------------------------------------------
 
-function buildLeadAgentPrompt(
+async function buildLeadAgentPrompt(
   sessionState?: SessionState,
   options?: { mode?: "auto" | "team" }
-): string {
+): Promise<string> {
   const skills = getSkills();
   const skillSummary = buildSkillSummary(skills, SKILL_AGENT_MAP);
   const schemaSummary = getSchemaSummary();
   const sessionStateContext = sessionState ? buildSessionStateContext(sessionState) : "";
+  const userMemory = sessionState?.userEmail ? await loadUserMemory(sessionState.userEmail) : "";
+  const todayDate = new Date().toISOString().split("T")[0];
   const modeGuidance =
     options?.mode === "team"
       ? `\n## Team-läge\nDu är lead-agent i team-läge. För icke-triviala uppgifter ska du aktivt överväga att delegera till specialister, men bara när det faktiskt förbättrar resultatet.`
       : `\n## Auto-läge\nDu är lead-agent i auto-läge. Avgör själv om du ska svara direkt, använda vanliga verktyg eller delegera till specialister.`;
 
   return `Du är en AI-assistent för Business Falkenberg. Du hjälper medarbetare med research, data, dokument och analys.
+
+Dagens datum: ${todayDate}
 
 ## Hur du arbetar
 
@@ -588,6 +598,13 @@ Om du ser [REDIGERA ARTIFACT] i meddelandet:
 
 ${modeGuidance}
 
+## Minne (add_to_memory)
+Du har ett verktyg add_to_memory. Använd det för att spara lärdomar:
+- När du gör ett misstag och användaren rättar dig
+- När du upptäcker att data innehåller fällor (t.ex. dubbelräkning, felaktiga kolumnnamn)
+- När ett tool-anrop returnerar ett oväntat error — spara vad du lärde dig
+Dina specialister har också detta verktyg.
+${userMemory ? `\n### Tidigare lärdomar\n${userMemory}\n` : ""}
 ${sessionStateContext ? `${sessionStateContext}\n` : ""}
 ${skillSummary}`;
 }
@@ -596,7 +613,7 @@ ${skillSummary}`;
 // Build specialist prompt
 // ---------------------------------------------------------------------------
 
-function buildSpecialistPrompt(agentDef: AgentDef): string {
+async function buildSpecialistPrompt(agentDef: AgentDef, userEmail?: string): Promise<string> {
   const skills = getSkills();
   const agentSkills = skills.filter((s) => {
     const targets = SKILL_AGENT_MAP[s.name];
@@ -605,11 +622,23 @@ function buildSpecialistPrompt(agentDef: AgentDef): string {
   });
 
   const skillContext = agentSkills.length > 0 ? buildSkillContext(agentSkills) : "";
+  const userMemory = userEmail ? await loadUserMemory(userEmail) : "";
+  const todayDate = new Date().toISOString().split("T")[0];
 
-  return agentDef.promptTemplate
+  let prompt = agentDef.promptTemplate
     .replace("{skills}", skillContext)
-    .replace("{schema}", agentDef.name === "db_researcher" ? getSchemaContext() : "")
-    + "\n\nDu far en strukturerad handoff med mal, leverabel, instruktioner, kontextreferenser och klart-nar-kriterier. Folj den strukturen och hall fokus pa precis den efterfragade leveransen.\n\nSvara alltid på svenska om inte annat anges.";
+    .replace("{schema}", agentDef.name === "db_researcher" ? getSchemaContext() : "");
+
+  prompt += `\n\nDagens datum: ${todayDate}`;
+  prompt += "\n\nDu far en strukturerad handoff med mal, leverabel, instruktioner, kontextreferenser och klart-nar-kriterier. Folj den strukturen och hall fokus pa precis den efterfragade leveransen.\n\nSvara alltid på svenska om inte annat anges.";
+
+  if (userMemory) {
+    prompt += `\n\n## Tidigare lärdomar (från minnet)\n${userMemory}`;
+  }
+
+  prompt += "\n\nDu har verktyget add_to_memory. Använd det om du upptäcker något viktigt (felaktig data, oväntat error, ny insikt om datan).";
+
+  return prompt;
 }
 
 // ---------------------------------------------------------------------------
@@ -860,7 +889,7 @@ async function* executeDelegate(
     content: `${agentDef.emoji} ${agentDef.label}: ${summarizeHandoffForStatus(handoff)}...`,
   };
 
-  const systemPrompt = buildSpecialistPrompt(agentDef);
+  const systemPrompt = await buildSpecialistPrompt(agentDef, sessionState.userEmail);
 
   // Specialist gets: a structured handoff + the original user message (for attachments)
   const sessionStateContext = buildSessionStateContext(sessionState);
@@ -888,10 +917,10 @@ async function* executeDelegate(
 
   const runner =
     provider === "anthropic"
-      ? runSubAgentAnthropic(systemPrompt, fullTask, tools as Anthropic.Tool[], agentModel, sessionId, costs)
+      ? runSubAgentAnthropic(systemPrompt, fullTask, tools as Anthropic.Tool[], agentModel, sessionId, costs, sessionState.userEmail)
       : runSubAgentGemini(systemPrompt, fullTask, tools, agentModel, sessionId, costs, {
           googleSearch: useGoogleSearch,
-        });
+        }, sessionState.userEmail);
 
   for await (const event of runner) {
     yield { ...event, agent: agentDef.name } as LLMStreamEvent;
@@ -956,7 +985,8 @@ async function* runSubAgentAnthropic(
   tools: Anthropic.Tool[],
   model: string,
   sessionId: string | undefined,
-  costs: CostAccumulator
+  costs: CostAccumulator,
+  userEmail?: string
 ): AsyncGenerator<LLMStreamEvent> {
   const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
@@ -999,7 +1029,7 @@ async function* runSubAgentAnthropic(
     for (const toolBlock of toolUseBlocks) {
       yield { type: "tool_use", toolName: toolBlock.name, toolId: toolBlock.id, input: toolBlock.input as Record<string, unknown> };
 
-      const result = await executeTool(toolBlock.name, toolBlock.input as Record<string, unknown>, sessionId);
+      const result = await executeTool(toolBlock.name, toolBlock.input as Record<string, unknown>, sessionId, userEmail);
 
       if (result.artifact) {
         yield { type: "artifact", id: result.artifact.id, title: result.artifact.title, artifactType: result.artifact.type, content: result.artifact.content };
@@ -1068,7 +1098,8 @@ async function* runSubAgentGemini(
   model: string,
   sessionId: string | undefined,
   costs: CostAccumulator,
-  options?: { googleSearch?: boolean }
+  options?: { googleSearch?: boolean },
+  userEmail?: string
 ): AsyncGenerator<LLMStreamEvent> {
   const client = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
@@ -1133,7 +1164,7 @@ async function* runSubAgentGemini(
       const toolId = `${fc.name}_${Date.now()}`;
       yield { type: "tool_use", toolName: fc.name, toolId, input: fc.args };
 
-      const result = await executeTool(fc.name, fc.args, sessionId);
+      const result = await executeTool(fc.name, fc.args, sessionId, userEmail);
 
       if (result.artifact) {
         yield { type: "artifact", id: result.artifact.id, title: result.artifact.title, artifactType: result.artifact.type, content: result.artifact.content };
@@ -1202,7 +1233,7 @@ async function* runLeadAgentGemini(
   mode: "auto" | "team"
 ): AsyncGenerator<LLMStreamEvent> {
   const client = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-  const systemPrompt = buildLeadAgentPrompt(sessionState, { mode });
+  const systemPrompt = await buildLeadAgentPrompt(sessionState, { mode });
   let workingState = cloneSessionState(sessionState);
 
   // Build contents from conversation history
@@ -1295,7 +1326,7 @@ async function* runLeadAgentGemini(
         }
       } else {
         // --- Regular tool execution ---
-        result = await executeTool(fc.name, fc.args, sessionId);
+        result = await executeTool(fc.name, fc.args, sessionId, sessionState.userEmail);
       }
 
       if (fc.name !== "delegate" && result.artifact) {
@@ -1381,7 +1412,7 @@ async function* runLeadAgentAnthropic(
   mode: "auto" | "team"
 ): AsyncGenerator<LLMStreamEvent> {
   const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-  const systemPrompt = buildLeadAgentPrompt(sessionState, { mode });
+  const systemPrompt = await buildLeadAgentPrompt(sessionState, { mode });
   let workingState = cloneSessionState(sessionState);
 
   let anthropicMessages: Anthropic.MessageParam[] = messages.map((m) => ({
@@ -1456,7 +1487,7 @@ async function* runLeadAgentAnthropic(
           yield next.value;
         }
       } else {
-        result = await executeTool(toolBlock.name, toolBlock.input as Record<string, unknown>, sessionId);
+        result = await executeTool(toolBlock.name, toolBlock.input as Record<string, unknown>, sessionId, sessionState.userEmail);
       }
 
       if (toolBlock.name !== "delegate" && result.artifact) {

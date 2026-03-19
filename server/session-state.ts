@@ -126,6 +126,7 @@ export type SessionTimelineEvent =
 export interface SessionState {
   version: 2;
   sessionId: string;
+  userEmail?: string;
   latestUserMessage: string | null;
   attachments: SessionAttachment[];
   artifacts: SessionArtifactState[];
